@@ -1,0 +1,107 @@
+
+**Snapshot:** Calamari is a modular SMB HR tool from Warsaw covering Time Off, Time & Attendance, Core HR and Performance. Scheduling is listed as coming soon. Core HR starts at about $2 per employee per month, and Time & Attendance at about $2.50.
+
+## 1. Core HR / people
+- Employee profiles hold role, department, manager, start date, contract type and place of work. Custom fields (lists, text, dates) have per-field access controls and change audit. Bulk edits go through Smart Tables or CSV import.
+- HR documents live in permissioned catalogues with statuses (complete, to complete, requested, to acknowledge) and full change history.
+- **Lifecycle** has no dedicated workflow that I could find:
+  - **Join:** create profiles by invite link, CSV import or API.
+  - **Probation:** the closest thing is date-field reminders, for example an end-of-probation date. Leave rules can also require a minimum tenure before a request, and balances can be prorated by hire date.
+  - **Confirm:** I found nothing. It appears to be a manual profile edit.
+  - **Exit:** deactivate the account via API or profile. Archived time records, leaves and documents stay available free of charge.
+- **Employee Requests** is a newer catalogue. Each request gets a number, an approver, an owner and a visible status, and only the submitter, approver and assignee can see it. The page is tagged "coming soon". The sample requests (FSA/HSA, IRS mileage) look US-oriented, which is my inference.
+
+## 2. Time & absence
+- Absence types are unlimited. Policies vary by contract type, and balances accrue and prorate. Carry-over can be capped or set to expire.
+- A restrictions engine validates each request in real time, covering notice periods, retroactive limits, and minimum and maximum length. It can warn or block.
+- Employees pick a substitute on the request, and it can be required. Approvals can be multi-step, with backup approvers and auto-approval for sick or remote days. The team calendar shows overlaps, and there are 110+ holiday calendars.
+- **Coverage** is only a substitute field plus calendar visibility. One industry page hints at "automated coverage assignment", but I couldn't corroborate it elsewhere, so I wouldn't count on it.
+
+## 3. Attendance & time
+- Clock-in works via web, mobile, iBeacon, QR/NFC kiosk (with photo capture), API, Slack and Teams. It also has geofencing, project time, and rounding to schedule or to increments.
+- Anomaly alerts cover shifts that are too long or short, overlaps, late or early times, work on a day off, and no-shows.
+- **Forgotten clock-outs** are still manual. At midnight, Calamari closes the day, marks the stop time with a "?" and asks the employee to fix it. Managers or admins edit it if the employee can't.
+- Timesheet edits go to manager approval, with an email reminder if a request sits pending for 3 days. There is also a change history and a weekly reminder about missing entries.
+- **Overtime, LOP and regularization:** overtime and flextime show up as filters. I saw no LOP concept or India-style regularization flow, and no payroll calculation, only exports. Overtime trend detection exists only as an analysis "skill" (see bucket 4). Those absences are unverified rather than confirmed, so it's worth checking in a trial.
+
+## 4. Agent surface (the main focus)
+**What it is:** An MCP server announced May 28, 2026, included in existing subscriptions at no extra cost. An admin enables it under Configuration > Integrations > AI Integration, and each employee then connects their own client via OAuth. Setup guides cover ChatGPT, Claude, Claude Code, Cursor, VS Code, Codex, Windsurf, Copilot Studio and Gemini CLI.
+
+**What the agent can do today:**
+- Clock in and out, submit time off with a substitute, reason and comment, check team absences, and search the directory.
+- Employees can also request partial-day leave, fill timesheets over date ranges (with the same overlap validation as the web app), assign time to projects and breaks, check balances per leave type, and ask about their team, schedule and contract type. It can also suggest the best dates for a long break using their schedule and the holiday calendar. The last one is the LLM reasoning over tool data, not a Calamari feature.
+- **Managers:** only team availability is listed as available.
+
+**Roadmap (from the vendor):** attendance and absence reports by department or group. For admins: configuring the system in natural language (profiles, policies) and automating back-office tasks. The launch post also promises full employee data, timesheets and entitlements.
+
+**Guardrails:** Every call runs with the signed-in user's permissions, and admins can switch the integration off at any time. The page also promises human-in-the-loop for sensitive actions such as updating employee records. Record updates aren't shipped, so that is a design stance for now.
+
+**The analytics "skills" are not live agent calls.** Ready-made Bradford Factor, Overtime Trends, PTO Bottlenecks, PTO Entitlement Usage and Performance Summary skills come as Claude Skills, Gemini Gems and ChatGPT GPTs. You paste in your own data. In practice that means exporting a report and handing it to the model.
+
+**Non-LLM automation** predates all this. The Slack and Teams bots handle clock-in, leave requests, presence lists and alerts. These are deterministic, not agentic. I found no first-party in-app assistant, and Performance's "AI Support" is still marked coming soon.
+
+## Still manual
+- **Agent gaps:** approving leave and any write to employee records or policies. Approval appears in the marketing copy ("approve leave") but not in the "Available now" lists, so I'd treat it as unshipped.
+- **Reporting:** exports and the analysis skills are still a manual hand-off.
+- **Admin config:** absence types, approval flows, holiday calendars, custom fields, request catalogue and integration setup are all UI or admin work today.
+- **Lifecycle:** probation and confirmation tracking, onboarding tasks and coverage planning have no dedicated workflow.
+- **Attendance:** fixing auto-closed days and approving timesheet edits, plus regularization and overtime rules if you need them.
+
+## Caveats
+- The AI page still carries "join the waitlist" wording while the launch post says it's rolling out to everyone, so the copy is partly stale.
+- The API reference flags the legacy Employees endpoints as deprecated. I couldn't render the newer people-records section. The older API docs list rate limits of 10 requests/second, 720/hour and 2,880/day.
+- Help Center still describes MCP v1 as only leave submit + absence calendar + clock in/out. Live tools/list (below) and What's New (Jul 2026) are broader — treat Help Center as stale.
+
+## 5. Live MCP tools/list (Cursor, Sep 2026)
+Connected as OAuth user to `https://gateway.eu-west-1.calamari.io/mcp-server/mcp` (namespace `user-calamari`). **17 domain tools** (+ Cursor `mcp_auth`).
+
+### Leave / absence
+- `getAbsenceTypes` — leave types + rules (substitute/reason/comment requirements, unit, minDuration)
+- `getPartDayPossibility` — allowed half-day / hourly presets before booking
+- `checkAbsenceRequestRestrictions` — pre-submit warnings (balance, overlap, policy); confirm with user if any
+- `createAbsenceRequest` — submit leave for the authenticated user only
+- `getAbsenceAllowances` — own balances (earned / used / pending / allowed) by year and type
+- `getAbsenceAllowancesForEmployee` — another employee's balances (admin, self, or manager if enabled)
+- `search` — absence requests in [from, to], optional peopleUuids and/or teamIds (paginated)
+- `getPublicHolidays` — holidays in range (non-working; do not consume leave balance)
+
+### Time & attendance
+- `clockIn` / `clockOut` — start / finish shift
+- `checkTimesheetOverlap` — pre-check before bulk timesheet create
+- `createTimesheetEntries` — bulk timesheet (IMMEDIATE or CHANGE_REQUEST needing approval)
+- `getWorkPlan` — static weekly work schedule (workingDay, start/finish, duration)
+
+### People / org
+- `getMyProfile` — self profile: identity, position, contract, hire date, **probation end date**, termination date, manager, teams, roles
+- `searchPeople` — find non-archived people (e.g. substitutes → legacyId)
+- `listTeams` — accessible teams (`[member]` marks own teams)
+- `getTeamMembers` — members of one team (paginated)
+
+### Not in live tools/list (vs product / marketing)
+- Approve / reject leave
+- Write/update employee records or admin policies
+- Attendance anomaly / no-show / late reports as tools
+- Company-wide “who is due for confirmation” (only own probation date via `getMyProfile`)
+- Bradford / overtime / PTO bottleneck “skills” (still paste-in exports, not MCP)
+- Project time / breaks as separate tools (timesheet entries support description only in this schema)
+
+## 6. What's New skim (eu.intercom.news/calamari, as of Sep 2026)
+
+### MCP timeline
+- Mar 2026 — waitlist: leave submit, clock in/out, who's away on a date
+- May 2026 — MCP launch for all customers
+- Jun 2026 (LinkedIn) — part-day leave, team availability, timesheets, colleague info, smart leave planning
+- Jul 20, 2026 — What's New: weekly timesheet fill + leave balances via MCP; simpler connect UX
+
+### Product releases relevant to the gap report
+- Sep 15, 2026 — Leave restrictions: block leave on chosen weekdays; limit overlapping absences inside a group (warn or block), scoped by leave type
+- Sep 15, 2026 — Smart Table: undo (incl. bulk), yes/no in-table edits, "Active during period" filter (includes people later archived)
+- Sep 15, 2026 — Employee Requests: auto request numbers, PDF download, visibility counts, status counters (no longer just "coming soon")
+- Sep 15, 2026 — Clock-in: Wear OS + Apple Watch; NFC phone tap at door (breaks/projects)
+- Aug 19, 2026 — Scheduling module coming soon (fall): plan by person/role, absences+holidays visible, draft→publish, planned vs actual hours
+- Aug 18, 2026 — Gmail autoresponder for absences (incl. cover person); Employee Requests admin "all requests" + 3-day reminders
+- Earlier 2026 — Abnormalities: overlapping shifts as continuous irregularity; "Absence" abnormality can be turned off for flexible contracts
+
+### Still open / not in What's New
+- No dedicated confirmation/probation workflow called out
+- No MCP tools for approve-leave or attendance-anomaly reports in these posts

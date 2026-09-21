@@ -1,0 +1,28 @@
+﻿{
+    "party_id":  null,
+    "employee_id":  null,
+    "id":  "1c62d180-c8a7-4943-a302-9a9b8ad2d0de",
+    "email":  "team13@theschoolofai.in",
+    "name":  "Team 13",
+    "role":  "hr_user",
+    "roles":  [
+                  "hr_user",
+                  "payroll_user",
+                  "user",
+                  "agent_user",
+                  "sales_viewer"
+              ],
+    "allowed_apps":  [
+                         "payroll",
+                         "agent",
+                         "crm"
+                     ],
+    "company_id":  "5cbe5a55-af74-4363-a436-f5350593114c",
+    "department_id":  null,
+    "team":  "",
+    "avatar_url":  null,
+    "is_active":  1,
+    "last_login":  "2026-09-19T10:00:21.614870",
+    "created_at":  "2026-09-13T03:57:52.523513",
+    "needs_recovery_enrollment":  true
+}

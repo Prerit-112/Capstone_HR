@@ -1,0 +1,137 @@
+﻿=== Employee | domain=people | kind=record ===
+behaviors: "numberable"
+permissions: {"admin":["read","create","write","delete"],"hr_user":["read","create","write"]}
+fields:
+  - party_id: link ->Party required
+  - company_id: link ->Company
+  - department_id: link ->Department
+  - designation: text
+  - designation_id: link ->PayrollDesignation
+  - date_of_joining: date
+  - date_of_birth: date
+  - gender: select options=[male|female|other]
+  - employment_type: select options=[full_time|part_time|contract|intern]
+  - salary_structure_id: link ->SalaryStructure
+  - status: select options=[active|on_leave|suspended|left]
+  - employee_id_number: text
+  - first_name: text required
+  - last_name: text
+  - email: email required
+  - pan: text
+  - uan: text
+  - esi_number: text
+  - aadhaar: text
+  - father_name: text
+  - age: number
+  - differently_abled: select options=[none|visual|hearing|locomotor|mental|multiple]
+  - work_location_id: link ->WorkLocation
+  - ctc_annual: currency
+  - ctc_monthly: currency
+  - payment_mode: select options=[direct_deposit|bank_transfer|cheque|cash]
+  - bank_name: text
+  - bank_account_number: text
+  - ifsc_code: text
+  - bank_branch: text
+  - tax_regime: select options=[old|new]
+  - epf_enabled: bool
+  - esi_enabled: bool
+  - pt_enabled: bool
+  - portal_enabled: bool
+  - residential_address: text
+  - residential_city: text
+  - residential_state: text
+  - residential_pin: text
+  - notice_period_days: number
+  - probation_end_date: date
+  - exit_date: date
+  - exit_reason: select options=[resignation|termination|retirement|death|absconding]
+  - us_filing_status: select options=[single|married_jointly|married_separately|head_of_household]
+  - w4_dependents_credit: currency
+  - w4_deductions: currency
+  - w4_extra_withholding: currency
+  - retirement_401k_percent: number
+  - flsa_exempt: bool
+children: {}
+
+=== Attendance | domain=people | kind=record ===
+behaviors: 
+permissions: {"admin":["read","create","write","delete"],"hr_user":["read","create","write"]}
+fields:
+  - employee_id: link ->Employee required
+  - company_id: link ->Company
+  - date: date required
+  - status: select required options=[present|absent|half_day|on_leave|work_from_home]
+  - check_in: text
+  - check_out: text
+  - shift: text
+  - overtime_hours: number
+  - is_lop: bool
+  - lop_hours: number
+children: {}
+
+=== LeaveApplication | domain=people | kind=transaction ===
+behaviors: ["submittable","numberable"]
+permissions: {"admin":["read","create","write","submit","cancel","delete"],"hr_user":["read","create","write","submit","cancel"],"payroll_admin":["read","create","write","submit","cancel","delete"]}
+fields:
+  - employee_id: link ->Employee required
+  - company_id: link ->Company
+  - leave_type_id: link ->LeaveType
+  - leave_type: select required options=[casual|sick|earned|maternity|paternity|unpaid]
+  - from_date: date required
+  - to_date: date required
+  - reason: text
+  - half_day: bool
+  - days: number
+  - status: state
+children: {}
+
+=== LeaveBalance | domain=people | kind=record ===
+behaviors: 
+permissions: {"admin":["read","create","write","delete"],"hr_user":["read","create","write"],"payroll_admin":["read","create","write","delete"],"payroll_user":["read"],"user":["read"]}
+fields:
+  - employee_id: link ->Employee required
+  - company_id: link ->Company
+  - leave_type_id: link ->LeaveType
+  - leave_type: select required options=[casual|sick|earned|maternity|paternity|unpaid|compensatory]
+  - fiscal_year: text required
+  - opening_balance: number
+  - accrued_days: number
+  - carried_forward: number
+  - used_days: number
+  - encashed_days: number
+  - balance_days: number
+children: {}
+
+=== LeaveType | domain=people | kind=config ===
+behaviors: 
+permissions: {"admin":["read","create","write","delete"],"hr_user":["read","create","write"],"payroll_admin":["read","create","write","delete"],"payroll_user":["read"],"user":["read"]}
+fields:
+  - name: text required
+  - company_id: link ->Company
+  - code: select required options=[casual|sick|earned|maternity|paternity|unpaid|compensatory]
+  - annual_entitlement: number
+  - accrual_frequency: select options=[none|monthly|quarterly|yearly]
+  - accrual_per_period: number
+  - is_paid: bool
+  - carry_forward: bool
+  - max_carry_forward: number
+  - encashable: bool
+  - max_encashment_days: number
+  - requires_approval: bool
+  - is_active: bool
+children: {}
+
+=== HolidayList | domain=people | kind=config ===
+behaviors: 
+permissions: {"admin":["read","create","write","delete"],"hr_user":["read","create","write"],"payroll_admin":["read","create","write","delete"],"payroll_user":["read"],"user":["read"]}
+fields:
+  - name: text required
+  - company_id: link ->Company
+  - fiscal_year: text
+  - work_location_id: link ->WorkLocation
+  - from_date: date
+  - to_date: date
+  - holidays: children
+  - is_active: bool
+children: {"holidays":{"shape":{"date":"@{type=date; required=True}","description":"@{type=text}","is_restricted":"@{type=bool; default=False}"}}}
+

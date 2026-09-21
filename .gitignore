@@ -1,0 +1,15 @@
+# Secrets and local credentials
+project_breif.txt
+.env
+.env.*
+*.pem
+
+# Large AgentSwitch API dumps (summaries are committed instead)
+step1b_schemas_full.json
+step1b_tools_list_full.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.cursor/

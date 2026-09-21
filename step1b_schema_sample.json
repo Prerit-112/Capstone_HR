@@ -1,0 +1,161 @@
+﻿{
+    "entity":  "AssetScanEvent",
+    "domain":  "assets",
+    "kind":  "ledger",
+    "behaviors":  [
+
+                  ],
+    "fields":  [
+                   {
+                       "name":  "company_id",
+                       "type":  "link",
+                       "required":  true,
+                       "to":  "Company"
+                   },
+                   {
+                       "name":  "asset_id",
+                       "type":  "link",
+                       "required":  true,
+                       "to":  "Asset"
+                   },
+                   {
+                       "name":  "scanned_code",
+                       "type":  "text",
+                       "required":  true
+                   },
+                   {
+                       "name":  "code_form",
+                       "type":  "select",
+                       "required":  false,
+                       "options":  [
+                                       "plain",
+                                       "url"
+                                   ]
+                   },
+                   {
+                       "name":  "matched_field",
+                       "type":  "select",
+                       "required":  true,
+                       "options":  [
+                                       "barcode",
+                                       "asset_code",
+                                       "serial_number",
+                                       "number",
+                                       "id"
+                                   ]
+                   },
+                   {
+                       "name":  "intent",
+                       "type":  "select",
+                       "required":  true,
+                       "options":  [
+                                       "check_out",
+                                       "check_in",
+                                       "transfer"
+                                   ]
+                   },
+                   {
+                       "name":  "asset_status_at_scan",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "custodian_at_scan",
+                       "type":  "link",
+                       "required":  false,
+                       "to":  "Employee"
+                   },
+                   {
+                       "name":  "location_at_scan",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "proposed_custodian_id",
+                       "type":  "link",
+                       "required":  false,
+                       "to":  "Employee"
+                   },
+                   {
+                       "name":  "proposed_location",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "expected_return_date",
+                       "type":  "date",
+                       "required":  false
+                   },
+                   {
+                       "name":  "purpose",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "proposal_digest",
+                       "type":  "text",
+                       "required":  true
+                   },
+                   {
+                       "name":  "approval_request_id",
+                       "type":  "link",
+                       "required":  true,
+                       "to":  "ApprovalRequest"
+                   },
+                   {
+                       "name":  "approval_number",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "actor_user_id",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "actor_name",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "assurance_code",
+                       "type":  "text",
+                       "required":  false
+                   },
+                   {
+                       "name":  "scanned_at",
+                       "type":  "date",
+                       "required":  false,
+                       "subtype":  "datetime"
+                   }
+               ],
+    "permissions":  {
+                        "admin":  [
+                                      "read"
+                                  ],
+                        "asset_manager":  [
+                                              "read"
+                                          ],
+                        "asset_user":  [
+                                           "read"
+                                       ],
+                        "operations_user":  [
+                                                "read"
+                                            ],
+                        "hr_admin":  [
+                                         "read"
+                                     ],
+                        "finance_admin":  [
+                                              "read"
+                                          ],
+                        "auditor":  [
+                                        "read"
+                                    ],
+                        "employee":  [
+                                         "read"
+                                     ]
+                    },
+    "children":  {
+
+                 }
+}
