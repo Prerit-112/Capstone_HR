@@ -1,0 +1,8 @@
+{
+  "id": "robust_as_of_window",
+  "family": "robustness",
+  "verifier": "bar",
+  "as_of": "2026-09-18",
+  "allow_writes": false,
+  "prompt": "Who is on leave next week, whose attendance does not look right, and who is due for confirmation? Use the provided as_of date as 'today' — do not use the real calendar today."
+}

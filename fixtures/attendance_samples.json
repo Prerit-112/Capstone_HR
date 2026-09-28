@@ -1,0 +1,42 @@
+[
+  {
+    "id": "att-present-null",
+    "employee_id": "baf152b3-e8ee-4da2-bee4-592637b9f94c",
+    "date": "2026-09-18",
+    "status": "present",
+    "check_in": null,
+    "check_out": null,
+    "is_lop": false,
+    "lop_hours": 0
+  },
+  {
+    "id": "att-lop-zero",
+    "employee_id": "baf152b3-e8ee-4da2-bee4-592637b9f94c",
+    "date": "2026-09-17",
+    "status": "present",
+    "check_in": "09:00",
+    "check_out": "18:00",
+    "is_lop": true,
+    "lop_hours": 0
+  },
+  {
+    "id": "att-punch-order",
+    "employee_id": "baf152b3-e8ee-4da2-bee4-592637b9f94c",
+    "date": "2026-09-16",
+    "status": "present",
+    "check_in": "18:00",
+    "check_out": "09:00",
+    "is_lop": false,
+    "lop_hours": 0
+  },
+  {
+    "id": "att-absent-no-leave",
+    "employee_id": "emp-no-leave",
+    "date": "2026-09-15",
+    "status": "absent",
+    "check_in": null,
+    "check_out": null,
+    "is_lop": false,
+    "lop_hours": 0
+  }
+]

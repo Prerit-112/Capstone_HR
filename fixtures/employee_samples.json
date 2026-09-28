@@ -1,0 +1,23 @@
+[
+  {
+    "id": "emp-due",
+    "first_name": "Due",
+    "last_name": "Soon",
+    "status": "active",
+    "probation_end_date": "2026-09-30"
+  },
+  {
+    "id": "emp-left",
+    "first_name": "Already",
+    "last_name": "Gone",
+    "status": "left",
+    "probation_end_date": "2026-09-28"
+  },
+  {
+    "id": "emp-far",
+    "first_name": "Far",
+    "last_name": "Away",
+    "status": "active",
+    "probation_end_date": "2027-01-01"
+  }
+]

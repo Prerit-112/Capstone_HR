@@ -1,0 +1,8 @@
+{
+  "id": "cap_lop_summary",
+  "family": "capability",
+  "verifier": "bar",
+  "as_of": null,
+  "allow_writes": false,
+  "prompt": "Summarise LOP and other attendance that looks wrong over the last 14 days. Also list anyone whose probation_end_date falls in the confirmation window, and anyone on approved or pending leave overlapping the next calendar week."
+}

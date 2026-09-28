@@ -1,0 +1,26 @@
+[
+  {
+    "id": "aa4dd201-a18f-48a1-afa4-f97ff26481f1",
+    "employee_id": "baf152b3-e8ee-4da2-bee4-592637b9f94c",
+    "from_date": "2026-11-10",
+    "to_date": "2026-11-15",
+    "status": "draft",
+    "leave_type": "casual"
+  },
+  {
+    "id": "b1e2d154-963c-4d1e-ab61-d7eaae4cd6e1",
+    "employee_id": "baf152b3-e8ee-4da2-bee4-592637b9f94c",
+    "from_date": "2026-10-12",
+    "to_date": "2026-10-12",
+    "status": "pending_approval",
+    "leave_type": "sick"
+  },
+  {
+    "id": "leave-approved-week",
+    "employee_id": "emp-2",
+    "from_date": "2026-09-28",
+    "to_date": "2026-09-30",
+    "status": "approved",
+    "leave_type": "casual"
+  }
+]

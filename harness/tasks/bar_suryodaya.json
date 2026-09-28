@@ -1,0 +1,8 @@
+{
+  "id": "bar_suryodaya",
+  "family": "core",
+  "verifier": "bar",
+  "as_of": null,
+  "allow_writes": false,
+  "prompt": "Who is on leave next week, whose attendance does not look right, and who is due for confirmation?"
+}

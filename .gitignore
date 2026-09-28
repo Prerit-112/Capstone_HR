@@ -2,11 +2,20 @@
 project_breif.txt
 .env
 .env.*
+!.env.example
 *.pem
 
 # Large AgentSwitch API dumps (summaries are committed instead)
 step1b_schemas_full.json
 step1b_tools_list_full.json
+
+# Agent / harness artefacts
+runs/
+fixtures/live/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # OS / editor
 .DS_Store
