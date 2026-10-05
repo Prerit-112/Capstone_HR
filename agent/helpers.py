@@ -11,9 +11,11 @@ from typing import Any
 from agent.hr_rules import (
     confirmation_due,
     flag_attendance,
+    holiday_dates,
     leaves_in_window,
     next_week_window,
     parse_date,
+    week_containing,
 )
 from agent.mcp_client import McpClient
 
@@ -96,6 +98,47 @@ HELPER_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "hr__scan_leave_balances",
+            "description": (
+                "LeaveBalance rows for one employee (or a sample employee if employee_id omitted), "
+                "joined to LeaveType when the catalogue has rows. "
+                "If LeaveType.list is empty, entitlements are unknown — do not invent numbers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "employee_id": {
+                        "type": "string",
+                        "description": "Employee id; if omitted, pick one active employee who has balances",
+                    }
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hr__scan_holidays",
+            "description": (
+                "List HolidayList records and expand child holiday dates. "
+                "If the catalogue is empty, say so — do not invent public holidays. "
+                "Optionally pass as_of to suggest a Mon–Sun week that contains a holiday on or after as_of."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "as_of": {"type": "string", "description": "YYYY-MM-DD"},
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 HELPER_NAMES = frozenset(t["function"]["name"] for t in HELPER_TOOLS)
@@ -129,6 +172,10 @@ def run_helper(mcp: McpClient, name: str, args: dict[str, Any]) -> Any:
         return _scan_confirmation(mcp, args)
     if name == "hr__scan_leave_window":
         return _scan_leave(mcp, args)
+    if name == "hr__scan_leave_balances":
+        return _scan_balances(mcp, args)
+    if name == "hr__scan_holidays":
+        return _scan_holidays(mcp, args)
     return {"error": f"unknown helper {name}"}
 
 
@@ -141,6 +188,8 @@ def _scan_attendance(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
 
     leave_page = mcp.list_all("LeaveApplication.list", {"limit": 100}, max_pages=30)
     leaves = leave_page["items"]
+    hol_page = mcp.list_all("HolidayList.list", {"limit": 100}, max_pages=10)
+    hol_dates = holiday_dates(hol_page["items"])
 
     records: list[dict] = []
     days_with_data = []
@@ -154,7 +203,7 @@ def _scan_attendance(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
             days_with_data.append({"date": day.isoformat(), "count": len(page["items"])})
         records.extend(page["items"])
 
-    flags = flag_attendance(records, leaves=leaves)
+    flags = flag_attendance(records, leaves=leaves, holiday_dates=hol_dates)
     future_only = start > as_of
     out: dict[str, Any] = {
         "from_date": start.isoformat(),
@@ -172,7 +221,8 @@ def _scan_attendance(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
             }
             for f in flags
         ],
-        "partial_error": leave_page.get("partial_error"),
+        "holiday_dates_loaded": sorted(d.isoformat() for d in hol_dates),
+        "partial_error": leave_page.get("partial_error") or hol_page.get("partial_error"),
     }
     if future_only:
         out["warning"] = (
@@ -239,3 +289,107 @@ def _scan_leave(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
         ],
         "partial_error": leave_page.get("partial_error"),
     }
+
+
+def _scan_balances(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
+    emp_id = (args.get("employee_id") or "").strip() or None
+    bal_page = mcp.list_all("LeaveBalance.list", {"limit": 100}, max_pages=20)
+    type_page = mcp.list_all("LeaveType.list", {"limit": 100}, max_pages=5)
+    types = type_page["items"]
+    by_code = {(t.get("code") or "").strip(): t for t in types if t.get("code")}
+    by_id = {str(t.get("id")): t for t in types if t.get("id")}
+
+    rows = bal_page["items"]
+    if emp_id:
+        rows = [r for r in rows if str(r.get("employee_id") or "") == emp_id]
+    else:
+        counts: dict[str, int] = {}
+        for r in rows:
+            eid = str(r.get("employee_id") or "")
+            if eid:
+                counts[eid] = counts.get(eid, 0) + 1
+        if counts:
+            emp_id = max(counts, key=counts.get)
+            rows = [r for r in rows if str(r.get("employee_id") or "") == emp_id]
+
+    empty_types = len(types) == 0
+    balances = []
+    for r in rows:
+        code = (r.get("leave_type") or "").strip()
+        lt = by_id.get(str(r.get("leave_type_id") or "")) or by_code.get(code)
+        balances.append(
+            {
+                "employee_id": str(r.get("employee_id") or ""),
+                "leave_balance_id": str(r.get("id") or ""),
+                "leave_type": code,
+                "balance_days": r.get("balance_days"),
+                "used_days": r.get("used_days"),
+                "opening_balance": r.get("opening_balance"),
+                "annual_entitlement": None if empty_types else (lt or {}).get("annual_entitlement"),
+                "leave_type_matched": bool(lt),
+            }
+        )
+    out: dict[str, Any] = {
+        "employee_id": emp_id,
+        "leave_type_catalogue_empty": empty_types,
+        "leave_type_rows": len(types),
+        "balances": balances,
+        "partial_error": bal_page.get("partial_error") or type_page.get("partial_error"),
+    }
+    if empty_types:
+        out["warning"] = (
+            "LeaveType.list returned 0 rows. Report live LeaveBalance figures only; "
+            "put entitlement gaps in uncertain — do not invent annual_entitlement."
+        )
+    if not balances:
+        out["warning"] = (out.get("warning") or "") + " No LeaveBalance rows for the chosen employee."
+    return out
+
+
+def _scan_holidays(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
+    as_of = parse_date(args.get("as_of")) or date.today()
+    page = mcp.list_all("HolidayList.list", {"limit": 100}, max_pages=10)
+    rows = page["items"]
+    dates = holiday_dates(rows)
+    holidays = []
+    for row in rows:
+        kids = row.get("holidays") or []
+        if isinstance(kids, list):
+            for h in kids:
+                if not isinstance(h, dict):
+                    continue
+                d = parse_date(h.get("date"))
+                if d is None:
+                    continue
+                holidays.append(
+                    {
+                        "date": d.isoformat(),
+                        "description": h.get("description") or row.get("name"),
+                        "list_id": str(row.get("id") or ""),
+                    }
+                )
+    suggested = None
+    future = sorted(d for d in dates if d >= as_of)
+    pick = future[0] if future else (sorted(dates)[0] if dates else None)
+    if pick is not None:
+        w0, w1 = week_containing(pick)
+        suggested = {
+            "holiday_date": pick.isoformat(),
+            "from_date": w0.isoformat(),
+            "to_date": w1.isoformat(),
+        }
+    empty = len(dates) == 0
+    out: dict[str, Any] = {
+        "as_of": as_of.isoformat(),
+        "catalogue_empty": empty,
+        "holiday_list_rows": len(rows),
+        "holidays": holidays,
+        "suggested_week": suggested,
+        "partial_error": page.get("partial_error"),
+    }
+    if empty:
+        out["warning"] = (
+            "HolidayList has no child holiday dates. Do not invent public holidays. "
+            "Set claimed_success false and explain the empty catalogue in uncertain or refused."
+        )
+    return out

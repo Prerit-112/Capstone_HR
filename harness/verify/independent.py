@@ -104,6 +104,58 @@ def expected_attendance_flags(
     return flags
 
 
+def holiday_dates_from_lists(rows: list[dict]) -> set[date]:
+    """Child holiday days only — parent from/to is the list validity span."""
+    out: set[date] = set()
+    for row in rows:
+        kids = row.get("holidays") or []
+        if isinstance(kids, list):
+            for h in kids:
+                if not isinstance(h, dict):
+                    continue
+                d = parse_date(h.get("date"))
+                if d is not None:
+                    out.add(d)
+        d = parse_date(row.get("holiday_date"))
+        if d is not None:
+            out.add(d)
+    return out
+
+
+def week_containing(day: date) -> tuple[date, date]:
+    start = day - timedelta(days=day.weekday())
+    return start, start + timedelta(days=6)
+
+
+def _num(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def expected_balance_ids(balances: list[dict], employee_id: str) -> set[str]:
+    ids: set[str] = set()
+    for row in balances:
+        if str(row.get("employee_id") or "") != employee_id:
+            continue
+        bid = str(row.get("id") or "")
+        if bid:
+            ids.add(bid)
+    return ids
+
+
+def balance_days_by_id(balances: list[dict]) -> dict[str, float | None]:
+    out: dict[str, float | None] = {}
+    for row in balances:
+        bid = str(row.get("id") or "")
+        if bid:
+            out[bid] = _num(row.get("balance_days"))
+    return out
+
+
 def expected_confirmation(
     employees: list[dict],
     as_of: date,

@@ -1,8 +1,8 @@
 {
   "id": "cap_holiday_week_leave",
   "family": "capability",
-  "verifier": "structured",
+  "verifier": "holiday_week",
   "as_of": null,
   "allow_writes": false,
-  "prompt": "Using HolidayList, find a week that contains a holiday in the current or next fiscal context you can see. Who has approved or pending leave overlapping that week? Flag attendance on the holiday date that still says present."
+  "prompt": "Using HolidayList (child holiday dates, not the parent from_date span), find a Monday–Sunday week that contains a holiday you can see. Put that range in findings.holiday_week and the holiday dates in findings.holidays. Who has approved or pending_approval leave overlapping that week (on_leave)? Flag attendance on those holiday dates that still says present (attendance_flags reason present_on_holiday). If HolidayList has no holiday dates, do not invent any — claimed_success false and explain in uncertain or refused."
 }

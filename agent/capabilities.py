@@ -1,7 +1,8 @@
 """Capability detection — which scan helpers a prompt needs.
 
 Keyword domains, not a single canned query. Refusal / out-of-seat prompts
-need no helpers.
+need no helpers. Holiday and balance asks use their own helpers so they
+are not forced through the bar trio.
 """
 from __future__ import annotations
 
@@ -24,7 +25,8 @@ _DOMAIN_HELPERS: list[tuple[tuple[str, ...], str]] = [
             "does not look right",
             "doesn't look right",
             "abnormal",
-            "exception",
+            "looks wrong",
+            "look wrong",
         ),
         "hr__scan_attendance_flags",
     ),
@@ -41,12 +43,12 @@ _DOMAIN_HELPERS: list[tuple[tuple[str, ...], str]] = [
         (
             "on leave",
             "time off",
-            "pending_approval",
-            "next week",
             "who is out",
             "leave application",
             "overlapping leave",
             "approved or pending",
+            "next week",
+            "next calendar week",
         ),
         "hr__scan_leave_window",
     ),
@@ -64,15 +66,24 @@ _REFUSAL_HINTS = (
     "geofence",
     "why was",
     "root cause",
+    "late employee",
+    "forgotten punch",
 )
+
+
+def is_refusal_prompt(prompt: str) -> bool:
+    p = (prompt or "").lower()
+    return any(h in p for h in _REFUSAL_HINTS)
 
 
 def needed_helpers(prompt: str) -> frozenset[str]:
     p = (prompt or "").lower()
-    if any(h in p for h in _REFUSAL_HINTS) and not any(
-        k in p for k in ("attendance", "leave", "confirmation", "probation")
-    ):
+    if is_refusal_prompt(prompt):
         return frozenset()
+    if any(k in p for k in ("leavebalance", "leave balance", "entitlement", "accrual")):
+        return frozenset({"hr__scan_leave_balances"})
+    if "holiday" in p:
+        return frozenset({"hr__scan_holidays"})
     need: set[str] = set()
     for keywords, helper in _DOMAIN_HELPERS:
         if any(k in p for k in keywords):
@@ -83,6 +94,7 @@ def needed_helpers(prompt: str) -> frozenset[str]:
         and "balance" not in p
         and "entitlement" not in p
         and "accrual" not in p
+        and "holiday" not in p
     ):
         need.add("hr__scan_leave_window")
     return frozenset(need)
@@ -111,7 +123,6 @@ def attendance_has_past_coverage(steps: list, as_of: str | None) -> bool:
             args = {**args, "as_of": as_of}
         resolved = resolve_attendance_window(args)
         if isinstance(resolved, str):
-            # as_of-only with no from/to counts as lookback once helper runs that way
             if args.get("as_of") or as_of:
                 return True
             continue
@@ -122,12 +133,32 @@ def attendance_has_past_coverage(steps: list, as_of: str | None) -> bool:
 
 
 def missing_helpers(prompt: str, steps: list, *, as_of: str | None = None) -> frozenset[str]:
-    need = needed_helpers(prompt)
+    need = set(needed_helpers(prompt))
     called = helpers_called(steps)
+    p = (prompt or "").lower()
+    if "hr__scan_holidays" in called and "holiday" in p:
+        empty = _holiday_scan_empty(steps)
+        if empty is False:
+            need.add("hr__scan_leave_window")
+            need.add("hr__scan_attendance_flags")
     missing = set(need - called)
     if "hr__scan_attendance_flags" in need and not attendance_has_past_coverage(steps, as_of):
         missing.add("hr__scan_attendance_flags")
     return frozenset(missing)
+
+
+def _holiday_scan_empty(steps: list) -> bool | None:
+    for s in reversed(list(steps)):
+        target = getattr(s, "target", None) or (s.get("target") if isinstance(s, dict) else None)
+        ok = getattr(s, "ok", True) if not isinstance(s, dict) else s.get("ok")
+        if target != "hr__scan_holidays" or not ok:
+            continue
+        excerpt = getattr(s, "result_excerpt", None) if not isinstance(s, dict) else s.get("result_excerpt")
+        text = str(excerpt or "")
+        if "catalogue_empty" not in text:
+            return None
+        return "true" in text.split("catalogue_empty", 1)[-1][:24].lower()
+    return None
 
 
 def nudge_for_missing(missing: frozenset[str], *, as_of: str) -> str:
@@ -142,7 +173,7 @@ def nudge_for_missing(missing: frozenset[str], *, as_of: str) -> str:
     if "hr__scan_attendance_flags" in missing:
         lines.append(
             f'- hr__scan_attendance_flags with as_of="{as_of_d.isoformat()}" '
-            f"(or from_date=\"{att_from}\", to_date=\"{att_to}\"). "
+            f'(or from_date="{att_from}", to_date="{att_to}"). '
             f"Do not use {w0.isoformat()}..{w1.isoformat()} for attendance."
         )
     if "hr__scan_confirmation_due" in missing:
@@ -152,5 +183,9 @@ def nudge_for_missing(missing: frozenset[str], *, as_of: str) -> str:
             f'- hr__scan_leave_window with as_of="{as_of_d.isoformat()}" '
             f"(next week {w0.isoformat()} .. {w1.isoformat()})"
         )
+    if "hr__scan_leave_balances" in missing:
+        lines.append("- hr__scan_leave_balances (optionally with employee_id)")
+    if "hr__scan_holidays" in missing:
+        lines.append(f'- hr__scan_holidays with as_of="{as_of_d.isoformat()}"')
     lines.append("Then reply with ONLY the final JSON object.")
     return "\n".join(lines)

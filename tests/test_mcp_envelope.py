@@ -6,7 +6,7 @@ from agent.mcp_client import McpClient, McpError
 
 
 def test_rpc_error_on_200():
-    def handler(req: httpx.Request) -> httpx.Response:
+    def handler(req):
         if req.url.path.endswith("/api/mcp"):
             return httpx.Response(
                 200,

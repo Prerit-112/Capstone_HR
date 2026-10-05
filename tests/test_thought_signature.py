@@ -33,6 +33,6 @@ def test_sig_from_extra():
     assert out[0]["extra_content"]["google"]["thought_signature"] == "SIG123"
 
 
-def test_sig_already_in_dump():
+def test_sig_in_dump():
     out = serialize_tool_calls([_TC(sig="SIG456", in_dump=True)])
     assert out[0]["extra_content"]["google"]["thought_signature"] == "SIG456"

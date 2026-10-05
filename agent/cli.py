@@ -87,6 +87,24 @@ def format_answer(answer: dict[str, Any] | None, *, ended: str, error: str) -> s
         name = row.get("name") or row.get("employee_id") or "?"
         lines.append(f"  - {name}: probation_end_date={row.get('probation_end_date')}")
 
+    bals = findings.get("leave_balances") or []
+    if bals:
+        lines.append("")
+        lines.append(f"Leave balances: {len(bals)}")
+        for row in bals:
+            lines.append(
+                f"  - {row.get('leave_type')}: balance_days={row.get('balance_days')} "
+                f"entitlement={row.get('annual_entitlement')} id={row.get('leave_balance_id')}"
+            )
+
+    week = findings.get("holiday_week")
+    hols = findings.get("holidays") or []
+    if week or hols:
+        lines.append("")
+        lines.append(f"Holiday week: {week}")
+        for h in hols:
+            lines.append(f"  - {h}")
+
     if uncertain:
         lines.append("")
         lines.append("Notes / uncertain:")

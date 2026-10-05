@@ -11,7 +11,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from agent.capabilities import missing_helpers, nudge_for_missing
+from agent.capabilities import is_refusal_prompt, missing_helpers, nudge_for_missing
 from agent.catalogue import KNOWN_BLOCKED, READ_TOOLS, WRITE_TOOLS, Catalogue
 from agent.gemini_compat import serialize_tool_calls
 from agent.helpers import HELPER_NAMES, HELPER_TOOLS, run_helper
@@ -125,6 +125,19 @@ class HrAgent:
                         self.model = used_model
                         journal.model = used_model
                 except Exception as e:
+                    msg = str(e)
+                    if "invalid tool" in msg.lower() or "invalid_function" in msg.lower():
+                        journal.add(Step("error", "llm", False, f"retryable: {type(e).__name__}: {e}"))
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "The last tool call was rejected (invalid arguments). "
+                                    "Call tools using only schema properties, or reply with the final JSON."
+                                ),
+                            }
+                        )
+                        continue
                     journal.error = f"llm: {type(e).__name__}: {e}"
                     journal.add(Step("error", "llm", False, journal.error))
                     journal.finish("llm_error")
@@ -194,7 +207,21 @@ class HrAgent:
                     continue
 
                 refused = bool((parsed.get("refused") or {}).get("is_refusal"))
-                # Capability guard: don't accept success/empty claims without scan helpers.
+                if is_refusal_prompt(prompt) and not refused:
+                    journal.add(Step("guard", "refusal_required", False, "ask is out of seat or unsupported"))
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "This request cannot be completed from Team 13 HR tools "
+                                "(missing app, missing approve transition, or no punch/geofence root-cause fields). "
+                                "Reply with JSON: refused.is_refusal=true, claimed_success=false, "
+                                "escalate_to naming admin/Approvals or the owning seat, and why."
+                            ),
+                        }
+                    )
+                    continue
                 if not refused:
                     missing = missing_helpers(prompt, journal.steps, as_of=as_of)
                     if missing:
@@ -214,6 +241,7 @@ class HrAgent:
                             }
                         )
                         continue
+                    parsed = _merge_helper_findings(parsed, journal.helper_results)
 
                 journal.final_answer = parsed
                 journal.claimed_success = bool(parsed.get("claimed_success"))
@@ -247,6 +275,8 @@ class HrAgent:
             try:
                 result = run_helper(self.mcp, name, args)
                 ok = not (isinstance(result, dict) and result.get("error"))
+                if ok and isinstance(result, dict):
+                    journal.helper_results[name] = result
                 journal.add(
                     Step(
                         "tool",
@@ -257,7 +287,7 @@ class HrAgent:
                         result_excerpt=_excerpt(result),
                     )
                 )
-                return result
+                return _helper_view_for_llm(name, result)
             except Exception as e:
                 journal.add(Step("tool", name, False, str(e), args=args))
                 return {"error": str(e)}
@@ -370,6 +400,61 @@ class HrAgent:
             )
         )
         return result
+
+
+def _helper_view_for_llm(name: str, result: Any) -> Any:
+    """Keep the model context small; full helper payload is on the journal."""
+    if not isinstance(result, dict):
+        return result
+    view = dict(result)
+    for key, cap in (("flags", 20), ("confirmation_due", 20), ("on_leave", 20), ("balances", 20)):
+        rows = view.get(key)
+        if isinstance(rows, list) and len(rows) > cap:
+            view[key] = rows[:cap]
+            view[f"{key}_total"] = len(rows)
+            view["note"] = (
+                "Full helper rows are stored by the agent and copied into findings. "
+                "Do not subsample or invent extra rows."
+            )
+    return view
+
+
+def _merge_helper_findings(parsed: dict[str, Any], helper_results: dict[str, Any]) -> dict[str, Any]:
+    findings = dict(parsed.get("findings") or {})
+    att = helper_results.get("hr__scan_attendance_flags")
+    if isinstance(att, dict) and isinstance(att.get("flags"), list):
+        findings["attendance_flags"] = att["flags"]
+    leave = helper_results.get("hr__scan_leave_window")
+    if isinstance(leave, dict) and isinstance(leave.get("on_leave"), list):
+        findings["on_leave"] = leave["on_leave"]
+    conf = helper_results.get("hr__scan_confirmation_due")
+    if isinstance(conf, dict) and isinstance(conf.get("confirmation_due"), list):
+        findings["confirmation_due"] = conf["confirmation_due"]
+    bals = helper_results.get("hr__scan_leave_balances")
+    if isinstance(bals, dict) and isinstance(bals.get("balances"), list):
+        findings["leave_balances"] = bals["balances"]
+        if bals.get("leave_type_catalogue_empty"):
+            notes = list(parsed.get("uncertain") or [])
+            msg = "LeaveType.list is empty; annual_entitlement unknown"
+            if msg not in notes:
+                notes.append(msg)
+            parsed["uncertain"] = notes
+    hol = helper_results.get("hr__scan_holidays")
+    if isinstance(hol, dict):
+        if isinstance(hol.get("holidays"), list):
+            findings["holidays"] = hol["holidays"]
+        week = hol.get("suggested_week")
+        if isinstance(week, dict):
+            findings["holiday_week"] = {"from_date": week.get("from_date"), "to_date": week.get("to_date")}
+        if hol.get("catalogue_empty"):
+            parsed["claimed_success"] = False
+            notes = list(parsed.get("uncertain") or [])
+            msg = "HolidayList has no child holiday dates"
+            if msg not in notes:
+                notes.append(msg)
+            parsed["uncertain"] = notes
+    parsed["findings"] = findings
+    return parsed
 
 
 def _record_fingerprint(record: Any) -> str:

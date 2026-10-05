@@ -1,8 +1,8 @@
 {
   "id": "cap_balance_check",
   "family": "capability",
-  "verifier": "structured",
+  "verifier": "balances",
   "as_of": null,
   "allow_writes": false,
-  "prompt": "Pick one active employee who has a LeaveBalance row. Report their leave balances by type versus LeaveType entitlements. Put gaps in uncertain — do not invent numbers. Leave on_leave / attendance_flags / confirmation_due empty unless directly relevant."
+  "prompt": "Pick one active employee who has a LeaveBalance row. Put every LeaveBalance for that person in findings.leave_balances (include leave_balance_id, leave_type, balance_days, used_days). Compare to LeaveType annual_entitlement when LeaveType.list has rows; if LeaveType is empty, put that gap in uncertain and do not invent entitlements. Leave on_leave / attendance_flags / confirmation_due empty unless directly relevant."
 }

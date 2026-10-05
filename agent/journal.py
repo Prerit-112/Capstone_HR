@@ -38,6 +38,7 @@ class RunJournal:
     seconds: float = 0.0
     started_at: float = field(default_factory=time.time)
     wire_log: list[dict[str, Any]] = field(default_factory=list)
+    helper_results: dict[str, Any] = field(default_factory=dict)
 
     def add(self, step: Step) -> None:
         self.steps.append(step)

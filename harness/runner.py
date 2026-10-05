@@ -84,9 +84,14 @@ def run_one(task: dict, *, repeats: int = 1) -> list[dict]:
 
         if not resolve_api_key():
             raise SystemExit("Set GEMINI_API_KEY in .env")
-        agent = HrAgent(client, cat)
 
         for r in range(repeats):
+            if task.get("adversary") == "pre_write_conflict":
+                from harness.adversary import ConflictHrAgent, restore_attendance
+
+                agent = ConflictHrAgent(client, cat)
+            else:
+                agent = HrAgent(client, cat)
             client.clear_wire_log()
             agent._seen.clear()
             journal = agent.run(
@@ -108,7 +113,16 @@ def run_one(task: dict, *, repeats: int = 1) -> list[dict]:
             (run_dir / "score.json").write_text(json.dumps(score, indent=2, default=str), encoding="utf-8")
             maybe_bug_candidate(journal, score)
             results.append({"run_dir": str(run_dir), "score": score, "ended": journal.ended})
-            print(json.dumps({"repeat": r, "outcome": score.get("outcome"), "ended": journal.ended, "run_dir": str(run_dir)}, indent=2))
+            print(json.dumps({"repeat": r, "outcome": score.get("outcome"), "ended": journal.ended, "run_dir": str(run_dir)}, indent=2), flush=True)
+
+            restore = getattr(agent, "restore", None)
+            if restore:
+                from harness.adversary import restore_attendance
+
+                try:
+                    restore_attendance(client, restore)
+                except Exception as e:
+                    print(f"restore_attendance failed: {e}")
     finally:
         client.close()
     return results
@@ -150,7 +164,20 @@ def main(argv: list[str] | None = None) -> int:
     summary_path = RUNS_DIR / f"summary_{int(time.time())}.json"
     summary_path.write_text(json.dumps(all_results, indent=2, default=str), encoding="utf-8")
     print(f"\nSummary: {summary_path}")
-    return 0
+    _print_scoreboard(all_results)
+    bad = [r for r in all_results if (r.get("score") or {}).get("outcome") == "false_success"]
+    return 1 if bad else 0
+
+
+def _print_scoreboard(results: list[dict]) -> None:
+    print("\n=== scoreboard ===")
+    for r in results:
+        score = r.get("score") or {}
+        print(f"{score.get('task_id')}\t{score.get('outcome')}\t{score.get('verifier')}")
+    from collections import Counter
+
+    c = Counter((r.get("score") or {}).get("outcome") for r in results)
+    print(dict(c))
 
 
 if __name__ == "__main__":

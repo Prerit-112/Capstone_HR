@@ -42,6 +42,8 @@ python -m harness.runner --list
 python -m harness.runner --task bar_suryodaya
 python -m harness.runner --task refuse_out_of_seat
 python -m harness.runner --all --repeats 1
+python -m harness.runner --task write_conflict_abort
+
 ```
 
 Order is fixed: **run → write journal to disk → verify via live MCP → score**.

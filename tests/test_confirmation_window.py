@@ -8,10 +8,17 @@ from harness.verify import independent as ind
 FIX = Path(__file__).resolve().parents[1] / "fixtures"
 
 
-def test_due_and_overdue():
-    emps = json.loads((FIX / "employee_samples.json").read_text(encoding="utf-8"))
-    ids = {d.employee_id for d in confirmation_due(emps, date(2026, 9, 28))}
+def _emps():
+    return json.loads((FIX / "employee_samples.json").read_text())
+
+
+def test_due_soon():
+    ids = {d.employee_id for d in confirmation_due(_emps(), date(2026, 9, 28))}
     assert "emp-due" in ids
+
+
+def test_overdue_counts():
+    emps = _emps()
     emps.append({
         "id": "emp-overdue",
         "first_name": "Old",
@@ -23,19 +30,29 @@ def test_due_and_overdue():
     assert "emp-overdue" in ids
 
 
-def test_skip_left():
-    emps = json.loads((FIX / "employee_samples.json").read_text(encoding="utf-8"))
-    ids = {d.employee_id for d in confirmation_due(emps, date(2026, 9, 28))}
+def test_left_skipped():
+    ids = {d.employee_id for d in confirmation_due(_emps(), date(2026, 9, 28))}
     assert "emp-left" not in ids
 
 
-def test_skip_far():
-    emps = json.loads((FIX / "employee_samples.json").read_text(encoding="utf-8"))
-    ids = {d.employee_id for d in confirmation_due(emps, date(2026, 9, 28))}
+def test_far_out_skipped():
+    ids = {d.employee_id for d in confirmation_due(_emps(), date(2026, 9, 28))}
     assert "emp-far" not in ids
 
 
-def test_verifier_matches_rules():
-    emps = json.loads((FIX / "employee_samples.json").read_text(encoding="utf-8"))
+def test_rules_match_verifier():
+    emps = _emps()
     day = date(2026, 9, 28)
     assert {d.employee_id for d in confirmation_due(emps, day)} == ind.expected_confirmation(emps, day)
+
+
+def test_suspended_skipped():
+    emps = _emps()
+    emps.append({
+        "id": "emp-sus",
+        "first_name": "Sus",
+        "status": "suspended",
+        "probation_end_date": "2026-09-20",
+    })
+    ids = {d.employee_id for d in confirmation_due(emps, date(2026, 9, 28))}
+    assert "emp-sus" not in ids

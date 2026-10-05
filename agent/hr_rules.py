@@ -235,12 +235,38 @@ def confirmation_due(
     return out
 
 
+def holiday_dates(rows: Iterable[dict[str, Any]]) -> set[date]:
+    """Child holiday days only — parent from/to is the list span, not every day off."""
+    out: set[date] = set()
+    for row in rows:
+        kids = row.get("holidays") or []
+        if isinstance(kids, list):
+            for h in kids:
+                if not isinstance(h, dict):
+                    continue
+                d = parse_date(h.get("date"))
+                if d is not None:
+                    out.add(d)
+        d = parse_date(row.get("holiday_date"))
+        if d is not None:
+            out.add(d)
+    return out
+
+
+def week_containing(day: date) -> tuple[date, date]:
+    start = day - timedelta(days=day.weekday())
+    return start, start + timedelta(days=6)
+
+
 def empty_answer(*, as_of: str, refused: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "findings": {
             "on_leave": [],
             "attendance_flags": [],
             "confirmation_due": [],
+            "leave_balances": [],
+            "holidays": [],
+            "holiday_week": None,
         },
         "actions_taken": [],
         "uncertain": [],

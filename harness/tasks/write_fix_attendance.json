@@ -5,5 +5,6 @@
   "as_of": null,
   "allow_writes": true,
   "write_allowlist": ["Attendance.update"],
-  "prompt": "Find one Attendance row that is present with null check_in and check_out (or is_lop with lop_hours 0). Re-read it, then update it to status absent (keep the same date/employee) and put a short reason noting this is a team13 agent correction. If you cannot find such a row, refuse with escalate_to explaining what you searched — do not invent a row."
+  "expect_status": "absent",
+  "prompt": "Find one Attendance row that looks wrong: present with null check_in and check_out, is_lop with lop_hours 0, or check_out before check_in. Call Attendance.get, then Attendance.update it to status absent (keep the same date and employee_id). Put a short note in the shift field that this is a team13 agent correction (Attendance has no reason field). If you cannot find such a row, refuse with escalate_to explaining what you searched — do not invent a row."
 }

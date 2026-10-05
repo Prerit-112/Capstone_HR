@@ -1,4 +1,4 @@
-# Team 13 — Bug findings (MCP validated 2026-09-21)
+# Team 13 — Bug findings (MCP validated 2026-09-21; round 2 filed 2026-09-29)
 
 Filed via `POST /api/bug-report` (see `GET /api/bug-report/mine`). Please re-check each in the UI.
 
@@ -79,6 +79,65 @@ Open each Attendance id above and confirm the bad values display. Try creating t
 
 ---
 
+## Bug 4 — Leave create accepted for exited (`status=left`) employees (filed)
+
+**Report id:** `82709252-97d4-4025-b74e-809459a457e5`  
+**UI record:** Leave `LA-2026-00582`  
+**id:** `2b6fcd89-1056-48f5-88c8-f0b05dce3b86`  
+**Employee:** anil.patil8093@corp.in (`2fd8fbe9-2fe5-434a-b68a-58cf14401142`)  
+**Employee status:** `left` (`exit_date=2025-04-15`)  
+**Leave:** casual draft 2027-06-15
+
+### MCP evidence
+- `Employee.list` / `Employee.get` confirm `status=left`.
+- `LeaveApplication.create` for that employee succeeded (draft).
+- Earlier probe: `LA-2026-00575` (same pattern; cancelled).
+
+### UI check
+1. Open Employee anil.patil8093@corp.in — confirm Left / exit date.
+2. Open Leave `LA-2026-00582` — confirm it exists against that person.
+3. Try creating leave for a left employee in UI — note if UI blocks what MCP allowed.
+
+---
+
+## Bug 5 — Leave submit ignores negative LeaveBalance (filed)
+
+**Report id:** `836c4c83-9e87-4e03-bd3d-c76c82c18bbe`  
+**UI record:** Leave `LA-2026-00583`  
+**id:** `08f0e68b-7c95-479b-92b6-fafc57761380`  
+**Employee:** anita.bhalerao@suryodaya.in (`908e36c2-4b9f-4d0c-8c91-81211d6f0891`)  
+**Status:** `pending_approval` (casual 2027-08-20)  
+**Balance id:** `45deae46-9b02-4a45-90eb-128451615778` — `balance_days=-1`, `used_days=1`, `opening_balance=0`, `accrued_days=0`
+
+### MCP evidence
+- Full scan (2026-09-29): **294/294** `LeaveBalance` rows had `balance_days < 0`.
+- `LeaveApplication.create` + `submit` still moved leave to `pending_approval`.
+- Prior repros (withdrawn): `LA-2026-00577`, `LA-2026-00581`.
+
+### UI check
+1. Open Leave `LA-2026-00583` (Pending Approval).
+2. Open LeaveBalance for anita.bhalerao@suryodaya.in / casual — confirm negative.
+3. Note whether UI warns or blocks submit when balance is insufficient.
+
+---
+
+## Bug 6 — Leave create accepts inconsistent spans / types (filed)
+
+**Report id:** `e67d80f3-b0fb-41b2-80a5-1d2b16bffbd1`
+
+| Leave | id | what was accepted |
+|-------|-----|-------------------|
+| `LA-2026-00584` | `f7773e60-1093-476b-8bcd-95cba866b473` | sick, **half_day**, 2027-03-01→03-05, **days=4.5** (prakash.rane8085@corp.in) |
+| `LA-2026-00585` | `ae9aa3f3-76e4-44cd-86ab-4bb29c440b2a` | **maternity** on **male** prakash.salunkhe8091@corp.in, 122 days (2027-09-01→12-31) |
+| `LA-2026-00573` (pre-existing) | `76bda086-6e9f-49c0-856a-f3d6fa131d6d` | paternity **7405.5** days, half_day, 2004-06-15→2024-09-23 |
+
+Also accepted then cancelled after probe: full-year leave in 2010 (`LA-2026-00579`, days=365).
+
+### UI check
+Open `LA-2026-00584`, `LA-2026-00585`, and `LA-2026-00573`. Confirm bad combos display. Try the same creates in UI.
+
+---
+
 ## Not bugs (validated — do not file)
 
 | Probe | Result |
@@ -87,6 +146,18 @@ Open each Attendance id above and confirm the bad values display. Try creating t
 | Create leave with `status=approved` / `banana` | Correctly rejected (state machine; starts at draft) |
 | Update `pending_approval` leave to `approved` via `.update` | Correctly blocked |
 | Seat 403 on other apps | Intentional boundary |
+| Overlapping leave for same employee | Correctly rejected |
+| Duplicate Attendance same employee+date | Correctly rejected |
+| `is_lop=true` with `lop_hours=-5` | Correctly rejected (“must be greater than 0”) |
+| Bogus `leave_type` outside enum | Schema rejects (`Invalid tool arguments`) |
+| `days` override vs date span | Platform recomputes days from dates |
+
+### Held (not filed)
+
+| Probe | Why held |
+|-------|----------|
+| `LeaveType.list` empty (0 rows); all balances negative | May be seed/config on shared book; Bug 5 already covers the agent-facing failure |
+| `HolidayList.list` empty | Data gap, not clearly a platform defect |
 
 ---
 
@@ -94,7 +165,15 @@ Open each Attendance id above and confirm the bad values display. Try creating t
 
 Created by team13 for validation (safe to leave or cancel in UI):
 
-- `LA-2026-00570` — pending_approval (keep for Approve UI test)
-- `LA-2026-00571` — draft multi-day (keep for date-filter UI test)
+**Round 1 (2026-09-21)**
+- `LA-2026-00570` — pending_approval (Approve UI test)
+- `LA-2026-00571` — draft multi-day (date-filter UI test)
 - `LA-2026-00572` — cancelled (withdraw proof)
 - Attendance rows on 2026-09-16 / 17 / 18 for prakash.salunkhe8091@corp.in
+
+**Round 2 (2026-09-29)**
+- `LA-2026-00582` — draft leave for left employee (Bug 4)
+- `LA-2026-00583` — pending_approval with negative balance (Bug 5)
+- `LA-2026-00584` — draft half_day multi-day (Bug 6)
+- `LA-2026-00585` — draft maternity on male (Bug 6)
+- `LA-2026-00573` — pre-existing extreme paternity (cited in Bug 6; not ours)
