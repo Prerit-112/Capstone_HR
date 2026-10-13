@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from datetime import date
 from pathlib import Path
 
@@ -17,12 +18,16 @@ if str(ROOT) not in sys.path:
 
 from agent.catalogue import Catalogue
 from agent.loop import HrAgent
-from agent.mcp_client import McpClient
+from agent.mcp_client import client_from_env
 from harness.verify import score_task
 
 TASKS_DIR = Path(__file__).resolve().parent / "tasks"
 RUNS_DIR = ROOT / "runs"
 BUG_DIR = RUNS_DIR / "bug_candidates"
+RESULTS_PATH = ROOT / "results.json"
+
+# Outcomes that count as a pass for the official results.json panel.
+PASS_OUTCOMES = frozenset({"verified_pass", "refusal_correct", "honest_shortfall"})
 
 
 def load_task(path: Path) -> dict:
@@ -33,16 +38,9 @@ def list_tasks() -> list[Path]:
     return sorted(TASKS_DIR.glob("*.json"))
 
 
-def build_client() -> McpClient:
+def build_client():
     load_dotenv(ROOT / ".env")
-    password = os.getenv("AS_PASSWORD", "")
-    if not password:
-        raise SystemExit("Set AS_PASSWORD in .env")
-    return McpClient(
-        base_url=os.getenv("AS_BASE_URL", "https://agentswitch.theschoolofai.in"),
-        email=os.getenv("AS_EMAIL", "team13@theschoolofai.in"),
-        password=password,
-    )
+    return client_from_env()
 
 
 def maybe_bug_candidate(journal, score: dict) -> None:
@@ -73,21 +71,91 @@ def maybe_bug_candidate(journal, score: dict) -> None:
     )
 
 
+def _task_title(task: dict) -> str:
+    if task.get("title"):
+        return str(task["title"])
+    family = task.get("family") or "task"
+    verifier = task.get("verifier") or "?"
+    return f"{family}/{verifier}: {task.get('id', '?')}"
+
+
+def _evidence(score: dict, ended: str) -> str:
+    bits = [
+        f"outcome={score.get('outcome')}",
+        f"verifier={score.get('verifier')}",
+        f"ended={ended}",
+    ]
+    for key in ("reason", "partial_error"):
+        if score.get(key):
+            bits.append(f"{key}={score[key]}")
+    return "; ".join(bits)[:500]
+
+
+def _official_task_row(task: dict, score: dict, ended: str) -> dict:
+    instance = (os.getenv("AGENTSWITCH_INSTANCE") or "").strip()
+    task_id = str(task.get("id") or "unknown")
+    outcome = str(score.get("outcome") or "fail")
+    passed = outcome in PASS_OUTCOMES
+    if outcome in {"verified_pass", "refusal_correct"}:
+        points = 1.0
+    elif outcome == "honest_shortfall":
+        points = 1.0
+    elif outcome in {"indeterminate", "not_evaluable"}:
+        points = 0.5
+        passed = False
+    else:
+        points = 0.0
+    row_id = f"{instance}:{task_id}" if instance else task_id
+    return {
+        "id": row_id,
+        "title": _task_title(task),
+        "passed": passed,
+        "score": points,
+        "evidence": _evidence(score, ended),
+    }
+
+
+def _error_result(task: dict, exc: BaseException) -> dict:
+    reason = f"{type(exc).__name__}: {exc}"[:300]
+    return {
+        "task": task,
+        "run_dir": "",
+        "score": {
+            "outcome": "fail",
+            "verifier": task.get("verifier"),
+            "task_id": task.get("id"),
+            "reason": reason,
+        },
+        "ended": "error",
+    }
+
+
+def write_results_json(task_rows: list[dict]) -> Path:
+    passed_n = sum(1 for t in task_rows if t.get("passed"))
+    instance = (os.getenv("AGENTSWITCH_INSTANCE") or "local").strip() or "local"
+    payload = {
+        "tasks": task_rows,
+        "summary": f"{instance}: {passed_n}/{len(task_rows)} tasks passed",
+    }
+    RESULTS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return RESULTS_PATH
+
+
 def run_one(task: dict, *, repeats: int = 1) -> list[dict]:
     client = build_client()
     results = []
     try:
-        client.login()
+        client.ensure_token()
         client.initialize()
         cat = Catalogue.from_tools_list(client.tools_list())
         from agent.llm import resolve_api_key
 
         if not resolve_api_key():
-            raise SystemExit("Set GEMINI_API_KEY in .env")
+            raise RuntimeError("Set OPENAI_API_KEY (official harness) or GEMINI_API_KEY (local)")
 
         for r in range(repeats):
             if task.get("adversary") == "pre_write_conflict":
-                from harness.adversary import ConflictHrAgent, restore_attendance
+                from harness.adversary import ConflictHrAgent
 
                 agent = ConflictHrAgent(client, cat)
             else:
@@ -112,8 +180,26 @@ def run_one(task: dict, *, repeats: int = 1) -> list[dict]:
             score = score_task(task, journal, client)
             (run_dir / "score.json").write_text(json.dumps(score, indent=2, default=str), encoding="utf-8")
             maybe_bug_candidate(journal, score)
-            results.append({"run_dir": str(run_dir), "score": score, "ended": journal.ended})
-            print(json.dumps({"repeat": r, "outcome": score.get("outcome"), "ended": journal.ended, "run_dir": str(run_dir)}, indent=2), flush=True)
+            results.append(
+                {
+                    "task": task,
+                    "run_dir": str(run_dir),
+                    "score": score,
+                    "ended": journal.ended,
+                }
+            )
+            print(
+                json.dumps(
+                    {
+                        "repeat": r,
+                        "outcome": score.get("outcome"),
+                        "ended": journal.ended,
+                        "run_dir": str(run_dir),
+                    },
+                    indent=2,
+                ),
+                flush=True,
+            )
 
             restore = getattr(agent, "restore", None)
             if restore:
@@ -131,7 +217,7 @@ def run_one(task: dict, *, repeats: int = 1) -> list[dict]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Team 13 HR harness")
     parser.add_argument("--task", default=None, help="Task id (filename without .json)")
-    parser.add_argument("--all", action="store_true")
+    parser.add_argument("--all", action="store_true", help="Run all tasks (default when no --task)")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args(argv)
@@ -146,27 +232,50 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     tasks = []
-    if args.all:
-        tasks = [load_task(p) for p in list_tasks()]
-    elif args.task:
+    if args.task:
         path = TASKS_DIR / f"{args.task}.json"
         if not path.exists():
             raise SystemExit(f"missing task: {path}")
         tasks = [load_task(path)]
     else:
-        raise SystemExit("Pass --task ID or --all (or --list)")
+        # Official harness: `python -m harness.runner` with no args → all tasks.
+        tasks = [load_task(p) for p in list_tasks()]
 
-    all_results = []
-    for t in tasks:
-        print(f"\n=== {t['id']} ===")
-        all_results.extend(run_one(t, repeats=args.repeats))
+    if not tasks:
+        raise SystemExit("No tasks found under harness/tasks/")
+
+    all_results: list[dict] = []
+    official_rows: list[dict] = []
+    try:
+        for t in tasks:
+            print(f"\n=== {t['id']} ===", flush=True)
+            try:
+                batch = run_one(t, repeats=args.repeats)
+            except Exception as e:
+                print(f"TASK ERROR {t.get('id')}: {e}", flush=True)
+                traceback.print_exc()
+                batch = [_error_result(t, e)]
+            all_results.extend(batch)
+            for r in batch:
+                official_rows.append(
+                    _official_task_row(r["task"], r.get("score") or {}, r.get("ended") or "")
+                )
+            # Incremental write so a timeout/kill still leaves partial results.
+            write_results_json(official_rows)
+    finally:
+        write_results_json(official_rows)
 
     summary_path = RUNS_DIR / f"summary_{int(time.time())}.json"
     summary_path.write_text(json.dumps(all_results, indent=2, default=str), encoding="utf-8")
     print(f"\nSummary: {summary_path}")
+    print(f"Results: {RESULTS_PATH}")
+
     _print_scoreboard(all_results)
     bad = [r for r in all_results if (r.get("score") or {}).get("outcome") == "false_success"]
-    return 1 if bad else 0
+    if bad:
+        print(f"note: {len(bad)} false_success outcome(s); results.json still written", flush=True)
+    # Official runner scores from results.json; always exit 0 after writing it.
+    return 0
 
 
 def _print_scoreboard(results: list[dict]) -> None:

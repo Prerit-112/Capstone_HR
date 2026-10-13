@@ -18,18 +18,16 @@ if str(ROOT) not in sys.path:
 
 from agent.catalogue import Catalogue
 from agent.loop import HrAgent
-from agent.mcp_client import McpClient
+from agent.mcp_client import McpClient, client_from_env
 
 
 def build_client() -> McpClient:
     load_dotenv(ROOT / ".env")
-    base = os.getenv("AS_BASE_URL", "https://agentswitch.theschoolofai.in")
-    email = os.getenv("AS_EMAIL", "team13@theschoolofai.in")
-    password = os.getenv("AS_PASSWORD", "")
-    if not password:
-        print("Set AS_PASSWORD in .env (see .env.example).", file=sys.stderr)
+    try:
+        return client_from_env()
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
         sys.exit(2)
-    return McpClient(base_url=base, email=email, password=password)
 
 
 def format_answer(answer: dict[str, Any] | None, *, ended: str, error: str) -> str:
@@ -136,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv(ROOT / ".env")
     client = build_client()
     try:
-        client.login()
+        client.ensure_token()
         if args.whoami:
             print(json.dumps(client.me(), indent=2))
             return 0
@@ -165,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         from agent.llm import resolve_api_key
 
         if not resolve_api_key():
-            print("Set GEMINI_API_KEY in .env", file=sys.stderr)
+            print("Set OPENAI_API_KEY (official harness) or GEMINI_API_KEY (local).", file=sys.stderr)
             return 2
 
         agent = HrAgent(client, cat)

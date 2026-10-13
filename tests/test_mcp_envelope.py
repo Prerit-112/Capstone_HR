@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from agent.catalogue import Catalogue, ToolSpec
-from agent.mcp_client import McpClient, McpError
+from agent.mcp_client import McpClient, McpError, client_from_env
 
 
 def test_rpc_error_on_200():
@@ -28,6 +28,25 @@ def test_notify_202():
     c._http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(202, content=b"")))
     c._token = "t"
     assert c.rpc("notifications/initialized", {}, notification=True) is None
+    c.close()
+
+
+def test_token_only_ensure_token():
+    c = McpClient(base_url="https://example.test", token="seat-token")
+    assert c.ensure_token() == "seat-token"
+    assert not c._can_relogin()
+    with pytest.raises(McpError, match="login unavailable"):
+        c.login()
+    c.close()
+
+
+def test_client_from_env_prefers_token(monkeypatch):
+    monkeypatch.setenv("AGENTSWITCH_BASE_URL", "https://example.test")
+    monkeypatch.setenv("AGENTSWITCH_TOKEN", "seat-token")
+    monkeypatch.delenv("AS_PASSWORD", raising=False)
+    c = client_from_env()
+    assert c.base_url == "https://example.test"
+    assert c.ensure_token() == "seat-token"
     c.close()
 
 

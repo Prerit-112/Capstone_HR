@@ -10,13 +10,16 @@ Wire contracts from the course brief §6:
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 
 PROTOCOL_VERSION = "2025-11-25"
+DEFAULT_BASE_URL = "https://agentswitch.theschoolofai.in"
 
 
 class McpError(Exception):
@@ -42,8 +45,9 @@ class WireEntry:
 @dataclass
 class McpClient:
     base_url: str
-    email: str
-    password: str
+    email: str = ""
+    password: str = ""
+    token: str | None = None
     client_name: str = "team13-hr-agent"
     client_version: str = "0.1.0"
     timeout: float = 60.0
@@ -56,6 +60,8 @@ class McpClient:
 
     def __post_init__(self) -> None:
         self.base_url = self.base_url.rstrip("/")
+        if self.token:
+            self._token = self.token
 
     def _http_client(self) -> httpx.Client:
         if self._http is None:
@@ -75,7 +81,12 @@ class McpClient:
 
     # --- auth ---
 
+    def _can_relogin(self) -> bool:
+        return bool(self.email and self.password)
+
     def login(self) -> str:
+        if not self._can_relogin():
+            raise McpError("login unavailable: no email/password (token-only session)")
         http = self._http_client()
         r = http.post(
             f"{self.base_url}/api/auth/login",
@@ -92,17 +103,24 @@ class McpClient:
         return token
 
     def ensure_token(self) -> str:
-        if not self._token:
-            self.login()
-        assert self._token
-        return self._token
+        if self._token:
+            return self._token
+        if self._can_relogin():
+            return self.login()
+        raise McpError("no AGENTSWITCH_TOKEN or AS_EMAIL/AS_PASSWORD credentials")
+
+    def _retry_after_401(self) -> bool:
+        """Re-login when password auth is available; seat tokens cannot be refreshed."""
+        if not self._can_relogin():
+            return False
+        self.login()
+        return True
 
     def me(self) -> dict[str, Any]:
         http = self._http_client()
         token = self.ensure_token()
         r = http.get(f"{self.base_url}/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-        if r.status_code == 401:
-            self.login()
+        if r.status_code == 401 and self._retry_after_401():
             r = http.get(
                 f"{self.base_url}/api/auth/me",
                 headers={"Authorization": f"Bearer {self._token}"},
@@ -142,8 +160,7 @@ class McpClient:
             return http.post(f"{self.base_url}/api/mcp", headers=headers, json=body)
 
         r = _post()
-        if r.status_code == 401:
-            self.login()
+        if r.status_code == 401 and self._retry_after_401():
             headers["Authorization"] = f"Bearer {self._token}"
             r = _post()
 
@@ -324,3 +341,33 @@ class McpClient:
             }
             for e in self.wire_log
         ]
+
+
+def client_from_env(*, dotenv_path: Path | str | None = None) -> McpClient:
+    """Build a client from official harness env vars, falling back to local .env login.
+
+    Official run: AGENTSWITCH_BASE_URL + AGENTSWITCH_TOKEN (Bearer).
+    Local: AS_BASE_URL + AS_EMAIL + AS_PASSWORD.
+    """
+    if dotenv_path is not None:
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path)
+
+    token = (os.getenv("AGENTSWITCH_TOKEN") or "").strip()
+    base = (
+        os.getenv("AGENTSWITCH_BASE_URL")
+        or os.getenv("AS_BASE_URL")
+        or DEFAULT_BASE_URL
+    ).rstrip("/")
+
+    if token:
+        return McpClient(base_url=base, token=token)
+
+    email = (os.getenv("AS_EMAIL") or "team13@theschoolofai.in").strip()
+    password = (os.getenv("AS_PASSWORD") or "").strip()
+    if not password:
+        raise RuntimeError(
+            "Set AGENTSWITCH_TOKEN (official harness) or AS_PASSWORD (local .env)"
+        )
+    return McpClient(base_url=base, email=email, password=password)

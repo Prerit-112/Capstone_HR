@@ -1,4 +1,4 @@
-"""LLM client config — Gemini via OpenAI-compatible endpoint."""
+"""LLM client config — platform OpenAI-compatible first, Gemini locally."""
 from __future__ import annotations
 
 import os
@@ -20,7 +20,14 @@ DEFAULT_FALLBACKS = (
 )
 
 
+def _platform_openai() -> bool:
+    """True when the official harness (or any explicit OpenAI endpoint) is configured."""
+    return bool((os.getenv("OPENAI_BASE_URL") or "").strip() and (os.getenv("OPENAI_API_KEY") or "").strip())
+
+
 def resolve_api_key() -> str:
+    if _platform_openai():
+        return (os.getenv("OPENAI_API_KEY") or "").strip()
     return (
         os.getenv("GEMINI_API_KEY")
         or os.getenv("GOOGLE_API_KEY")
@@ -30,6 +37,12 @@ def resolve_api_key() -> str:
 
 
 def resolve_model() -> str:
+    if _platform_openai():
+        # Never fall back to a Gemini model name on the platform endpoint.
+        return (
+            (os.getenv("OPENAI_MODEL") or "").strip()
+            or "agentswitch-default"
+        )
     return (
         os.getenv("GEMINI_MODEL")
         or os.getenv("OPENAI_MODEL")
@@ -38,10 +51,16 @@ def resolve_model() -> str:
 
 
 def resolve_fallbacks(primary: str | None = None) -> list[str]:
-    """Ordered unique model list: primary first, then GEMINI_MODEL_FALLBACKS / defaults."""
+    """Ordered unique model list: primary first, then optional fallbacks."""
     primary = (primary or resolve_model()).strip()
     raw = (os.getenv("GEMINI_MODEL_FALLBACKS") or "").strip()
-    extras = [m.strip() for m in raw.split(",") if m.strip()] if raw else list(DEFAULT_FALLBACKS)
+    if raw:
+        extras = [m.strip() for m in raw.split(",") if m.strip()]
+    elif _platform_openai() or (os.getenv("OPENAI_BASE_URL") or "").strip():
+        # Official harness / explicit OpenAI endpoint: stay on one model.
+        extras = []
+    else:
+        extras = list(DEFAULT_FALLBACKS)
     out: list[str] = []
     for m in [primary, *extras]:
         if m and m not in out:
@@ -59,7 +78,7 @@ def resolve_base_url() -> str:
 def build_llm_client() -> OpenAI:
     key = resolve_api_key()
     if not key:
-        raise RuntimeError("Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env")
+        raise RuntimeError("Set OPENAI_API_KEY (official harness) or GEMINI_API_KEY (local)")
     return OpenAI(api_key=key, base_url=resolve_base_url())
 
 

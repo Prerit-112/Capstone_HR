@@ -4,6 +4,8 @@ Week-2 deliverable: own MCP-driven HR agent and harness for AgentSwitch (Suryoda
 
 Week-1 gap report: [gap_report.md](./gap_report.md).
 
+Official server runs: `agentswitch-harness.toml` + `python -m harness.runner` → `results.json` (see [example](https://github.com/theschoolofai/agentswitch-harness-example)).
+
 ## Setup
 
 ```bash
@@ -12,12 +14,14 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
-# Fill AS_PASSWORD and GEMINI_API_KEY
+# Fill AS_PASSWORD and GEMINI_API_KEY (local)
 ```
 
 Credentials stay in `.env` only (never commit). Seat passwords are in your team channel / local `project_breif.txt`.
 
-Model: **Gemini** via Google's OpenAI-compatible API (`gemini-3.1-flash-lite` by default). On 429/503 the loop tries `GEMINI_MODEL_FALLBACKS`.
+**Auth:** local uses `AS_EMAIL` / `AS_PASSWORD`; the official runner injects `AGENTSWITCH_BASE_URL` + `AGENTSWITCH_TOKEN` (Bearer) — no `.env`.
+
+**Model:** local Gemini via OpenAI-compatible API (`GEMINI_API_KEY`). Official run sets `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` — those take priority when present.
 
 ## Smoke MCP (no LLM)
 
@@ -41,12 +45,12 @@ Journals land in `runs/`.
 python -m harness.runner --list
 python -m harness.runner --task bar_suryodaya
 python -m harness.runner --task refuse_out_of_seat
+python -m harness.runner                  # all tasks (official entrypoint)
 python -m harness.runner --all --repeats 1
 python -m harness.runner --task write_conflict_abort
-
 ```
 
-Order is fixed: **run → write journal to disk → verify via live MCP → score**.
+Order is fixed: **run → write journal to disk → verify via live MCP → score → `results.json`**.
 
 Task catalogue: [harness/tasks/TASKS.md](./harness/tasks/TASKS.md).
 

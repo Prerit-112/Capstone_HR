@@ -11,6 +11,7 @@ step1b_tools_list_full.json
 
 # Agent / harness artefacts
 runs/
+results.json
 fixtures/live/
 .venv/
 __pycache__/
