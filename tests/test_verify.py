@@ -116,8 +116,32 @@ def test_fingerprint_skips_noise():
     assert _record_fingerprint(a) == _record_fingerprint(b)
 
 
+def test_fingerprint_normalizes_lop_and_display():
+    from agent.loop import _record_fingerprint
+
+    get_row = {
+        "id": "1",
+        "status": "on_leave",
+        "is_lop": True,
+        "lop_hours": 8.0,
+        "date": "2026-09-29",
+        "_display": "x",
+        "updated_at": "t1",
+    }
+    list_row = {
+        "id": "1",
+        "status": "on_leave",
+        "is_lop": 1,
+        "lop_hours": 8,
+        "date": "2026-09-29T00:00:00",
+        "_display": "y",
+        "updated_at": "t2",
+    }
+    assert _record_fingerprint(get_row) == _record_fingerprint(list_row)
+
+
 def test_att_payload_keeps_punches():
-    from harness.adversary import attendance_update_payload
+    from harness.adversary import attendance_conflict_payload, attendance_update_payload
 
     row = {
         "id": "a1",
@@ -133,3 +157,35 @@ def test_att_payload_keeps_punches():
     assert p["check_in"] == "09:00"
     assert p["check_out"] == "18:00"
     assert p["overtime_hours"] == 0.25
+
+    # present + null punches still gets placeholder times so poison PUT is valid
+    broken = {
+        "id": "a2",
+        "employee_id": "e1",
+        "date": "2026-09-24",
+        "status": "present",
+        "check_in": None,
+        "check_out": None,
+        "overtime_hours": 0,
+    }
+    p2 = attendance_update_payload(broken, overtime_hours=0.25)
+    assert p2["check_in"] == "00:00"
+    assert p2["check_out"] == "00:01"
+    conflict = attendance_conflict_payload(broken)
+    assert "harness-conflict" in (conflict.get("shift") or "")
+
+    # Live rows store is_lop as 0/1; schema requires boolean.
+    lop_row = {
+        "id": "a3",
+        "employee_id": "e1",
+        "date": "2026-09-29",
+        "status": "on_leave",
+        "is_lop": 1,
+        "lop_hours": 8,
+        "overtime_hours": 0,
+        "check_in": "09:00",
+        "check_out": "18:00",
+    }
+    p3 = attendance_update_payload(lop_row, overtime_hours=0.25)
+    assert p3["is_lop"] is True
+    assert isinstance(p3["lop_hours"], float)

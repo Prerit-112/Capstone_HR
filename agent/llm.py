@@ -75,6 +75,27 @@ def resolve_base_url() -> str:
     return GEMINI_OPENAI_BASE
 
 
+def resolve_retries_per_model() -> int:
+    raw = (os.getenv("LLM_RETRIES_PER_MODEL") or "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    # Platform has a single model and late-suite rate limits; retry harder there.
+    return 5 if _platform_openai() else 3
+
+
+def resolve_backoff_seconds() -> float:
+    raw = (os.getenv("LLM_BACKOFF_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(0.1, float(raw))
+        except ValueError:
+            pass
+    return 3.0 if _platform_openai() else 2.0
+
+
 def build_llm_client() -> OpenAI:
     key = resolve_api_key()
     if not key:
@@ -83,12 +104,48 @@ def build_llm_client() -> OpenAI:
 
 
 def _is_retryable_limit(exc: BaseException) -> bool:
+    """Backward-compatible name: rate/quota style limits."""
+    return _is_retryable(exc)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """True for transient LLM/transport failures worth retrying on the same model."""
     name = type(exc).__name__
     msg = str(exc).lower()
-    if name in {"RateLimitError", "InternalServerError", "APIStatusError"}:
-        if "429" in msg or "503" in msg or "quota" in msg or "rate" in msg or "high demand" in msg or "unavailable" in msg:
+
+    if name in {
+        "RateLimitError",
+        "InternalServerError",
+        "APITimeoutError",
+        "APIConnectionError",
+        "TimeoutError",
+        "ConnectTimeout",
+        "ReadTimeout",
+    }:
+        return True
+
+    if name in {"APIStatusError", "APIError", "HTTPStatusError"}:
+        if any(code in msg for code in ("429", "500", "502", "503", "504")):
             return True
-    if "429" in msg or "resource_exhausted" in msg:
+        if any(tok in msg for tok in ("quota", "rate", "high demand", "unavailable", "overloaded", "capacity")):
+            return True
+
+    retry_tokens = (
+        "429",
+        "resource_exhausted",
+        "rate limit",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "temporarily unavailable",
+        "server error",
+        "bad gateway",
+        "gateway timeout",
+        "high demand",
+        "unavailable",
+    )
+    if any(tok in msg for tok in retry_tokens):
         return True
     return False
 
@@ -100,17 +157,19 @@ def chat_with_fallback(
     tools: list[dict[str, Any]] | None,
     models: list[str] | None = None,
     temperature: float = 0.1,
-    retries_per_model: int = 2,
-    backoff_seconds: float = 2.0,
+    retries_per_model: int | None = None,
+    backoff_seconds: float | None = None,
 ) -> tuple[Any, str]:
-    """Create a chat completion, rotating models on 429/503.
+    """Create a chat completion, retrying transient errors then rotating models.
 
     Returns (response, model_used).
     """
     chain = models or resolve_fallbacks()
+    retries = retries_per_model if retries_per_model is not None else resolve_retries_per_model()
+    backoff = backoff_seconds if backoff_seconds is not None else resolve_backoff_seconds()
     last_err: BaseException | None = None
     for model in chain:
-        for attempt in range(retries_per_model):
+        for attempt in range(retries):
             try:
                 kwargs: dict[str, Any] = {
                     "model": model,
@@ -123,11 +182,13 @@ def chat_with_fallback(
                 return client.chat.completions.create(**kwargs), model
             except Exception as e:
                 last_err = e
-                if not _is_retryable_limit(e):
+                if not _is_retryable(e):
                     raise
-                # Brief backoff, then try again / next model.
-                time.sleep(backoff_seconds * (attempt + 1))
-                break  # next model after one backoff cycle per model attempt group
-        # continue to next model after retries exhausted for this one
+                # Stay on this model for all retries; only then try the next fallback.
+                if attempt + 1 < retries:
+                    time.sleep(backoff * (attempt + 1))
+                    continue
+                time.sleep(backoff * (attempt + 1))
+                break  # exhausted retries for this model → next model
     assert last_err is not None
     raise last_err

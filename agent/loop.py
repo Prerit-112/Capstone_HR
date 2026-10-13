@@ -140,11 +140,15 @@ class HrAgent:
                         continue
                     journal.error = f"llm: {type(e).__name__}: {e}"
                     journal.add(Step("error", "llm", False, journal.error))
-                    journal.finish("llm_error")
-                    journal.wire_log = self.mcp.dump_wire_log()
-                    return journal
+                    return self._finish_after_llm_failure(journal, as_of=as_of)
 
-                choice = resp.choices[0]
+                choices = getattr(resp, "choices", None) or []
+                if not choices:
+                    journal.error = "llm: empty choices in chat completion"
+                    journal.add(Step("error", "llm", False, journal.error))
+                    return self._finish_after_llm_failure(journal, as_of=as_of)
+
+                choice = choices[0]
                 msg = choice.message
                 tool_calls = msg.tool_calls or []
 
@@ -250,14 +254,33 @@ class HrAgent:
                 journal.wire_log = self.mcp.dump_wire_log()
                 return journal
 
-            journal.finish("max_steps")
-            journal.wire_log = self.mcp.dump_wire_log()
-            return journal
+            journal.error = journal.error or "max_steps reached without final JSON"
+            journal.add(Step("error", "max_steps", False, journal.error))
+            return self._finish_after_llm_failure(journal, as_of=as_of, ended_hint="max_steps")
         except Exception as e:
-            journal.error = str(e)
-            journal.finish("llm_error")
-            journal.wire_log = self.mcp.dump_wire_log()
-            return journal
+            journal.error = f"{type(e).__name__}: {e}"
+            journal.add(Step("error", "uncaught", False, journal.error))
+            return self._finish_after_llm_failure(journal, as_of=as_of)
+
+    def _finish_after_llm_failure(
+        self,
+        journal: RunJournal,
+        *,
+        as_of: str,
+        ended_hint: str | None = None,
+    ) -> RunJournal:
+        """Turn a mid-run LLM/transport failure into an honest evaluable answer when possible."""
+        recovered = _recover_final_answer(journal, as_of=as_of, error=journal.error or "llm_error")
+        if recovered is not None:
+            journal.final_answer = recovered
+            journal.claimed_success = bool(recovered.get("claimed_success"))
+            journal.add(Step("answer", "recovered", True, result_excerpt=_excerpt(recovered)))
+            refused = bool((recovered.get("refused") or {}).get("is_refusal"))
+            journal.finish("refused" if refused else (ended_hint or "llm_error"))
+        else:
+            journal.finish(ended_hint or "llm_error")
+        journal.wire_log = self.mcp.dump_wire_log()
+        return journal
 
     def _dispatch_tool(
         self,
@@ -360,6 +383,8 @@ class HrAgent:
                             "current": current,
                         }
                     self._seen[key] = current if isinstance(current, dict) else {"_raw": current}
+                    if name == "Attendance.update" and isinstance(current, dict):
+                        args = _enrich_attendance_update(args, current, run_id=run_id)
                     # Stamp provenance into free-text reason when present.
                     if "reason" in (self.catalogue.get(name).input_schema.get("properties") or {}):
                         stamp = f" [team13 agent {run_id}]"
@@ -379,15 +404,11 @@ class HrAgent:
             ok = False
             detail = str(e)
 
-        # Cache gets/lists samples for conflict detection.
+        # Cache authoritative .get snapshots only. List rows often differ in
+        # display/_permissions/int-vs-bool fields and caused false conflicts.
         if ok and name.endswith(".get") and isinstance(result, dict) and result.get("id"):
             entity = name.split(".")[0]
             self._seen[f"{entity}:{result['id']}"] = result
-        if ok and name.endswith(".list") and isinstance(result, dict):
-            for row in result.get("data") or result.get("items") or []:
-                if isinstance(row, dict) and row.get("id"):
-                    entity = name.split(".")[0]
-                    self._seen[f"{entity}:{row['id']}"] = row
 
         journal.add(
             Step(
@@ -400,6 +421,112 @@ class HrAgent:
             )
         )
         return result
+
+
+def _as_boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _enrich_attendance_update(args: dict[str, Any], current: dict[str, Any], *, run_id: str) -> dict[str, Any]:
+    """Fill required Attendance.update fields from the live row so present-without-punches is not sent."""
+    out = dict(args)
+    for key in ("employee_id", "date", "company_id"):
+        if out.get(key) in (None, "") and current.get(key) is not None:
+            out[key] = current[key]
+    if out.get("date") is not None:
+        out["date"] = str(out["date"])[:10]
+
+    status = str(out.get("status") if out.get("status") is not None else current.get("status") or "").strip().lower()
+    # present rows reject updates that drop punches
+    if status == "present":
+        for key in ("check_in", "check_out"):
+            if out.get(key) in (None, "") and current.get(key) is not None:
+                out[key] = current[key]
+    else:
+        # Keep punches when correcting to absent unless the model explicitly cleared them.
+        for key in ("check_in", "check_out", "overtime_hours"):
+            if key not in out and current.get(key) is not None:
+                out[key] = current[key]
+
+    # Closed schema: is_lop must be boolean; live rows often store 0/1.
+    if "is_lop" in out:
+        out["is_lop"] = _as_boolish(out["is_lop"])
+    if "lop_hours" in out and out["lop_hours"] is not None:
+        try:
+            out["lop_hours"] = float(out["lop_hours"])
+        except (TypeError, ValueError):
+            out["lop_hours"] = 0.0
+    if "overtime_hours" in out and out["overtime_hours"] is not None:
+        try:
+            out["overtime_hours"] = float(out["overtime_hours"])
+        except (TypeError, ValueError):
+            out["overtime_hours"] = 0.0
+
+    if not (out.get("shift") or "").strip():
+        prior = (current.get("shift") or "").strip()
+        note = f"team13 agent correction: {run_id}"
+        out["shift"] = prior if prior.startswith("team13 agent correction") else note
+    return out
+
+
+def _conflict_step(journal: RunJournal) -> Step | None:
+    for step in reversed(journal.steps):
+        blob = f"{step.detail or ''} {step.result_excerpt or ''}"
+        if "shared_book_conflict" in blob:
+            return step
+    return None
+
+
+def _empty_findings() -> dict[str, Any]:
+    return {
+        "on_leave": [],
+        "attendance_flags": [],
+        "confirmation_due": [],
+        "leave_balances": [],
+        "holidays": [],
+        "holiday_week": None,
+    }
+
+
+def _recover_final_answer(journal: RunJournal, *, as_of: str, error: str) -> dict[str, Any] | None:
+    """Build an honest final JSON from journal state after LLM failure.
+
+    Returns None only when there is nothing useful to report (no tools, no conflict).
+    """
+    conflict = _conflict_step(journal)
+    has_helpers = bool(journal.helper_results)
+    has_tools = any(s.kind in {"tool", "reread", "guard", "refused"} for s in journal.steps)
+    if conflict is None and not has_helpers and not has_tools:
+        return None
+
+    base: dict[str, Any] = {
+        "findings": _empty_findings(),
+        "actions_taken": [],
+        "uncertain": [f"run interrupted: {error}"] if error else ["run interrupted before final model reply"],
+        "refused": {"is_refusal": False, "why": "", "escalate_to": ""},
+        "claimed_success": False,
+        "as_of": as_of,
+    }
+    base = _merge_helper_findings(base, journal.helper_results)
+
+    if conflict is not None:
+        base["refused"] = {
+            "is_refusal": True,
+            "why": conflict.detail or "shared_book_conflict: record changed since last read — write aborted",
+            "escalate_to": "Team 12 (Payroll) or admin — shared-book conflict; re-read and decide again",
+        }
+        base["claimed_success"] = False
+        return base
+
+    # Prefer honest shortfall over inventing success after a crash.
+    base["claimed_success"] = False
+    return base
 
 
 def _helper_view_for_llm(name: str, result: Any) -> Any:
@@ -460,7 +587,32 @@ def _merge_helper_findings(parsed: dict[str, Any], helper_results: dict[str, Any
 def _record_fingerprint(record: Any) -> str:
     if not isinstance(record, dict):
         return repr(record)
-    # Ignore volatile fields if present.
-    skip = {"updated_at", "modified", "_transitions"}
-    slim = {k: v for k, v in sorted(record.items()) if k not in skip}
+    # Ignore volatile / display-only fields; normalize types that flip between list/get.
+    skip = {
+        "updated_at",
+        "modified",
+        "_transitions",
+        "_next",
+        "_permissions",
+        "_can_create",
+        "_display",
+        "_company_id_display",
+        "_employee_id_display",
+        "_verify_with",
+    }
+    slim: dict[str, Any] = {}
+    for k, v in sorted(record.items()):
+        if k in skip or str(k).startswith("_"):
+            continue
+        if k == "is_lop":
+            slim[k] = _as_boolish(v)
+        elif k in {"lop_hours", "overtime_hours"} and v is not None:
+            try:
+                slim[k] = float(v)
+            except (TypeError, ValueError):
+                slim[k] = v
+        elif k == "date" and v is not None:
+            slim[k] = str(v)[:10]
+        else:
+            slim[k] = v
     return json.dumps(slim, sort_keys=True, default=str)

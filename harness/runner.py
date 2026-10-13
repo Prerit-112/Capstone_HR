@@ -246,8 +246,17 @@ def main(argv: list[str] | None = None) -> int:
 
     all_results: list[dict] = []
     official_rows: list[dict] = []
+    # Pace LLM calls across a full suite (platform rate limits hit the last tasks).
     try:
-        for t in tasks:
+        inter_task_sleep = float((os.getenv("LLM_INTER_TASK_SLEEP") or "0").strip() or "0")
+    except ValueError:
+        inter_task_sleep = 0.0
+    if inter_task_sleep <= 0 and (os.getenv("OPENAI_BASE_URL") or "").strip() and (os.getenv("OPENAI_API_KEY") or "").strip():
+        inter_task_sleep = 2.0
+    try:
+        for i, t in enumerate(tasks):
+            if i and inter_task_sleep > 0:
+                time.sleep(inter_task_sleep)
             print(f"\n=== {t['id']} ===", flush=True)
             try:
                 batch = run_one(t, repeats=args.repeats)
