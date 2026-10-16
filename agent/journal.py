@@ -30,7 +30,7 @@ class RunJournal:
     steps: list[Step] = field(default_factory=list)
     final_answer: dict[str, Any] | None = None
     claimed_success: bool = False
-    ended: str = ""  # done | max_steps | llm_error | refused | guard
+    ended: str = ""  # done | max_steps | llm_error | refused | guard | budget_exhausted | token_budget
     error: str = ""
     calls: int = 0
     tool_calls: int = 0
@@ -39,6 +39,9 @@ class RunJournal:
     started_at: float = field(default_factory=time.time)
     wire_log: list[dict[str, Any]] = field(default_factory=list)
     helper_results: dict[str, Any] = field(default_factory=dict)
+    # Suite-level stop: platform run budget gone — runner skips remaining tasks.
+    budget_exhausted: bool = False
+    approx_tokens: int = 0
 
     def add(self, step: Step) -> None:
         self.steps.append(step)

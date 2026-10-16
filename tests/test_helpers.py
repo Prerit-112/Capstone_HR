@@ -123,5 +123,5 @@ def test_helper_view_truncates():
 
     big = {"flags": [{"attendance_id": str(i), "reason": "is_lop"} for i in range(50)]}
     view = _helper_view_for_llm("hr__scan_attendance_flags", big)
-    assert len(view["flags"]) == 20
+    assert len(view["flags"]) == 12
     assert view["flags_total"] == 50

@@ -7,7 +7,14 @@ from typing import Any
 
 from agent.catalogue import Catalogue
 from agent.journal import RunJournal, Step
-from agent.loop import HrAgent, _enrich_attendance_update, _recover_final_answer
+from agent.loop import (
+    HrAgent,
+    _compact_messages,
+    _enrich_attendance_update,
+    _recover_final_answer,
+    _slim_tool_payload,
+)
+from agent.llm import BudgetExhaustedError
 from harness.verify import verify_write_conflict
 
 
@@ -182,3 +189,95 @@ def test_agent_recovers_when_llm_dies_after_conflict(monkeypatch):
     assert journal.claimed_success is False
     score = verify_write_conflict(journal)
     assert score["outcome"] == "verified_pass"
+
+
+def test_slim_tool_payload_drops_display_fields():
+    raw = {
+        "id": "a1",
+        "status": "present",
+        "_permissions": {"write": True},
+        "_display": "noise",
+        "items": list(range(20)),
+    }
+    slim = _slim_tool_payload(raw, allow_writes=True)
+    assert slim["id"] == "a1"
+    assert "_permissions" not in slim
+    assert len(slim["items"]) == 8
+    assert slim["items_total"] == 20
+
+
+def test_compact_messages_shortens_old_tools():
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+    ]
+    for i in range(8):
+        messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}"}]})
+        messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": "Z" * 2000})
+    _compact_messages(messages, allow_writes=True)
+    tool_lens = [len(m["content"]) for m in messages if m.get("role") == "tool"]
+    assert any(n < 2000 for n in tool_lens[:-4])
+    assert all(n == 2000 for n in tool_lens[-4:])
+
+
+def test_agent_sets_budget_exhausted_flag(monkeypatch):
+    monkeypatch.setattr("agent.llm.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setenv("LLM_RETRIES_PER_MODEL", "1")
+    monkeypatch.setenv("LLM_BACKOFF_SECONDS", "0.01")
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "100000")
+
+    class DeadLlm:
+        def __init__(self):
+            self.chat = self
+
+        @property
+        def completions(self):
+            return self
+
+        def create(self, **_kwargs):
+            raise BudgetExhaustedError("HTTP 429 budget_exhausted")
+
+    from agent.catalogue import ToolSpec
+
+    cat = Catalogue(
+        tools={
+            "Employee.list": ToolSpec(
+                name="Employee.list",
+                description="list",
+                input_schema={"type": "object", "properties": {}},
+            ),
+        }
+    )
+    agent = HrAgent(FakeMcp(), cat, openai_client=DeadLlm(), max_steps=3)
+    journal = agent.run("Refuse this manufacturing work order.", task_id="refuse_out_of_seat")
+    assert journal.budget_exhausted is True
+    assert journal.ended == "budget_exhausted"
+
+
+def test_agent_stops_on_per_task_token_limit(monkeypatch):
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "50")
+
+    class CountingLlm:
+        def __init__(self):
+            self.calls = 0
+            self.chat = self
+
+        @property
+        def completions(self):
+            return self
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            return _text_response('{"findings":{},"actions_taken":[],"uncertain":[],'
+                                  '"refused":{"is_refusal":false,"why":"","escalate_to":""},'
+                                  '"claimed_success":false,"as_of":"2026-10-05"}')
+
+    from agent.catalogue import Catalogue
+
+    llm = CountingLlm()
+    agent = HrAgent(FakeMcp(), Catalogue(tools={}), openai_client=llm, max_steps=3)
+    # Inflate the initial user message past the tiny limit via a huge prompt.
+    journal = agent.run("x" * 500, task_id="token_cap")
+    assert journal.ended == "token_budget"
+    assert llm.calls == 0
+    assert "token_budget" in journal.error

@@ -19,6 +19,63 @@ DEFAULT_FALLBACKS = (
     "gemini-2.5-flash",
 )
 
+# Soft per-task ceiling so 11 tasks stay well under a ~500k run budget.
+DEFAULT_TASK_TOKEN_LIMIT = 28_000
+
+
+class BudgetExhaustedError(Exception):
+    """Hard run/token budget exhausted — do not retry; stop remaining suite tasks."""
+
+    def __init__(self, message: str, *, cause: BaseException | None = None):
+        super().__init__(message)
+        self.cause = cause
+
+
+def is_budget_exhausted(exc: BaseException) -> bool:
+    """True when the platform signals the run token budget is gone (not a soft RPM 429)."""
+    msg = str(exc).lower()
+    tokens = (
+        "budget_exhausted",
+        "budget exhausted",
+        "token budget",
+        "tokens budget",
+        "run budget",
+        "quota_exceeded_budget",
+    )
+    return any(tok in msg for tok in tokens)
+
+
+def resolve_task_token_limit() -> int:
+    """Max estimated prompt tokens per task before we stop and recover (~25–30k)."""
+    raw = (os.getenv("LLM_TASK_TOKEN_LIMIT") or "").strip()
+    if raw:
+        try:
+            return max(1_000, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_TASK_TOKEN_LIMIT
+
+
+def estimate_message_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
+    """Rough token estimate (chars/4) for budget enforcement without a tokenizer."""
+    total_chars = 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif content is not None:
+            total_chars += len(str(content))
+        for tc in m.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                fn = tc.get("function") or {}
+                total_chars += len(str(fn.get("name") or ""))
+                total_chars += len(str(fn.get("arguments") or ""))
+            else:
+                total_chars += 64
+    if tools:
+        total_chars += len(str(tools))
+    return max(1, total_chars // 4)
+
 
 def _platform_openai() -> bool:
     """True when the official harness (or any explicit OpenAI endpoint) is configured."""
@@ -109,7 +166,13 @@ def _is_retryable_limit(exc: BaseException) -> bool:
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """True for transient LLM/transport failures worth retrying on the same model."""
+    """True for transient LLM/transport failures worth retrying on the same model.
+
+    Hard budget exhaustion is never retryable — retries would burn the remaining run.
+    """
+    if isinstance(exc, BudgetExhaustedError) or is_budget_exhausted(exc):
+        return False
+
     name = type(exc).__name__
     msg = str(exc).lower()
 
@@ -163,6 +226,7 @@ def chat_with_fallback(
     """Create a chat completion, retrying transient errors then rotating models.
 
     Returns (response, model_used).
+    Raises BudgetExhaustedError without retry when the platform signals budget_exhausted.
     """
     chain = models or resolve_fallbacks()
     retries = retries_per_model if retries_per_model is not None else resolve_retries_per_model()
@@ -182,6 +246,8 @@ def chat_with_fallback(
                 return client.chat.completions.create(**kwargs), model
             except Exception as e:
                 last_err = e
+                if is_budget_exhausted(e):
+                    raise BudgetExhaustedError(str(e), cause=e) from e
                 if not _is_retryable(e):
                     raise
                 # Stay on this model for all retries; only then try the next fallback.
@@ -191,4 +257,6 @@ def chat_with_fallback(
                 time.sleep(backoff * (attempt + 1))
                 break  # exhausted retries for this model → next model
     assert last_err is not None
+    if is_budget_exhausted(last_err):
+        raise BudgetExhaustedError(str(last_err), cause=last_err) from last_err
     raise last_err

@@ -16,14 +16,80 @@ from agent.catalogue import KNOWN_BLOCKED, READ_TOOLS, WRITE_TOOLS, Catalogue
 from agent.gemini_compat import serialize_tool_calls
 from agent.helpers import HELPER_NAMES, HELPER_TOOLS, run_helper
 from agent.journal import RunJournal, Step
-from agent.llm import build_llm_client, chat_with_fallback, resolve_fallbacks, resolve_model
+from agent.llm import (
+    BudgetExhaustedError,
+    build_llm_client,
+    chat_with_fallback,
+    estimate_message_tokens,
+    resolve_fallbacks,
+    resolve_model,
+    resolve_task_token_limit,
+)
 from agent.mcp_client import McpClient, McpError
 from agent.prompts import SYSTEM_PROMPT, user_message
+
+# Tool payloads in the chat transcript (write tasks are the longest / last in suite).
+_TOOL_CONTENT_LIMIT_READ = 8_000
+_TOOL_CONTENT_LIMIT_WRITE = 3_500
+_COMPACT_TOOL_LIMIT = 600
 
 
 def _excerpt(obj: Any, limit: int = 800) -> str:
     s = obj if isinstance(obj, str) else json.dumps(obj, default=str)
     return s if len(s) <= limit else s[: limit - 3] + "..."
+
+
+def _tool_content_limit(*, allow_writes: bool) -> int:
+    raw = (os.getenv("LLM_TOOL_CONTENT_LIMIT") or "").strip()
+    if raw:
+        try:
+            return max(500, int(raw))
+        except ValueError:
+            pass
+    return _TOOL_CONTENT_LIMIT_WRITE if allow_writes else _TOOL_CONTENT_LIMIT_READ
+
+
+def _slim_tool_payload(result: Any, *, allow_writes: bool) -> Any:
+    """Drop bulky / display-only fields before they enter the LLM transcript."""
+    if not isinstance(result, dict):
+        return result
+    skip = {
+        "_transitions",
+        "_next",
+        "_permissions",
+        "_can_create",
+        "_display",
+        "_company_id_display",
+        "_employee_id_display",
+        "_verify_with",
+        "wire",
+        "raw",
+    }
+    out: dict[str, Any] = {}
+    for k, v in result.items():
+        if k in skip or str(k).startswith("_"):
+            continue
+        if isinstance(v, list) and allow_writes and len(v) > 8:
+            out[k] = v[:8]
+            out[f"{k}_total"] = len(v)
+        else:
+            out[k] = v
+    return out
+
+
+def _compact_messages(messages: list[dict[str, Any]], *, allow_writes: bool) -> None:
+    """Shrink older tool results in-place so write-task histories stay under budget."""
+    if len(messages) < 8:
+        return
+    # Keep system + first user intact; compact tool messages except the last few.
+    keep_tail = 4 if allow_writes else 6
+    tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    if len(tool_idxs) <= keep_tail:
+        return
+    for i in tool_idxs[:-keep_tail]:
+        content = messages[i].get("content") or ""
+        if isinstance(content, str) and len(content) > _COMPACT_TOOL_LIMIT:
+            messages[i]["content"] = content[: _COMPACT_TOOL_LIMIT - 20] + "...[compacted]"
 
 
 def _parse_final_json(text: str) -> dict[str, Any] | None:
@@ -102,9 +168,23 @@ class HrAgent:
             },
         ]
 
+        token_limit = resolve_task_token_limit()
+        tool_limit = _tool_content_limit(allow_writes=allow_writes)
+
         try:
             for _ in range(self.max_steps):
                 journal.calls += 1
+                _compact_messages(messages, allow_writes=allow_writes)
+                approx = estimate_message_tokens(messages, tools or None)
+                journal.approx_tokens = max(journal.approx_tokens, approx)
+                if approx > token_limit:
+                    journal.error = (
+                        f"token_budget: estimated {approx} tokens exceeds per-task limit {token_limit}"
+                    )
+                    journal.add(Step("error", "token_budget", False, journal.error))
+                    return self._finish_after_llm_failure(
+                        journal, as_of=as_of, ended_hint="token_budget"
+                    )
                 try:
                     resp, used_model = chat_with_fallback(
                         self.llm,
@@ -124,6 +204,13 @@ class HrAgent:
                         )
                         self.model = used_model
                         journal.model = used_model
+                except BudgetExhaustedError as e:
+                    journal.error = f"llm: budget_exhausted: {e}"
+                    journal.add(Step("error", "llm", False, journal.error))
+                    journal.budget_exhausted = True
+                    return self._finish_after_llm_failure(
+                        journal, as_of=as_of, ended_hint="budget_exhausted"
+                    )
                 except Exception as e:
                     msg = str(e)
                     if "invalid tool" in msg.lower() or "invalid_function" in msg.lower():
@@ -141,6 +228,15 @@ class HrAgent:
                     journal.error = f"llm: {type(e).__name__}: {e}"
                     journal.add(Step("error", "llm", False, journal.error))
                     return self._finish_after_llm_failure(journal, as_of=as_of)
+
+                usage = getattr(resp, "usage", None)
+                if usage is not None:
+                    prompt_tok = int(getattr(usage, "prompt_tokens", 0) or 0)
+                    completion_tok = int(getattr(usage, "completion_tokens", 0) or 0)
+                    if prompt_tok or completion_tok:
+                        journal.approx_tokens = max(
+                            journal.approx_tokens, prompt_tok + completion_tok
+                        )
 
                 choices = getattr(resp, "choices", None) or []
                 if not choices:
@@ -186,11 +282,12 @@ class HrAgent:
                             write_allowlist=write_allowlist,
                             run_id=run_id,
                         )
+                        slim = _slim_tool_payload(result, allow_writes=allow_writes)
                         messages.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
-                                "content": json.dumps(result, default=str)[:12000],
+                                "content": json.dumps(slim, default=str)[:tool_limit],
                             }
                         )
                     continue
@@ -534,7 +631,8 @@ def _helper_view_for_llm(name: str, result: Any) -> Any:
     if not isinstance(result, dict):
         return result
     view = dict(result)
-    for key, cap in (("flags", 20), ("confirmation_due", 20), ("on_leave", 20), ("balances", 20)):
+    # Tighter caps — full rows stay on the journal for scoring/recovery.
+    for key, cap in (("flags", 12), ("confirmation_due", 12), ("on_leave", 12), ("balances", 12)):
         rows = view.get(key)
         if isinstance(rows, list) and len(rows) > cap:
             view[key] = rows[:cap]

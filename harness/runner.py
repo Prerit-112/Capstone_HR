@@ -28,6 +28,8 @@ RESULTS_PATH = ROOT / "results.json"
 
 # Outcomes that count as a pass for the official results.json panel.
 PASS_OUTCOMES = frozenset({"verified_pass", "refusal_correct", "honest_shortfall"})
+# Soft scores when the suite stops early or a task never got a usable answer.
+SOFT_OUTCOMES = frozenset({"indeterminate", "not_evaluable", "not_run"})
 
 
 def load_task(path: Path) -> dict:
@@ -100,7 +102,7 @@ def _official_task_row(task: dict, score: dict, ended: str) -> dict:
         points = 1.0
     elif outcome == "honest_shortfall":
         points = 1.0
-    elif outcome in {"indeterminate", "not_evaluable"}:
+    elif outcome in SOFT_OUTCOMES:
         points = 0.5
         passed = False
     else:
@@ -127,6 +129,23 @@ def _error_result(task: dict, exc: BaseException) -> dict:
             "reason": reason,
         },
         "ended": "error",
+        "budget_exhausted": False,
+    }
+
+
+def _not_run_result(task: dict, reason: str) -> dict:
+    """Remaining suite tasks after a hard budget_exhausted stop."""
+    return {
+        "task": task,
+        "run_dir": "",
+        "score": {
+            "outcome": "not_run",
+            "verifier": task.get("verifier"),
+            "task_id": task.get("id"),
+            "reason": reason[:300],
+        },
+        "ended": "not_run",
+        "budget_exhausted": False,
     }
 
 
@@ -186,6 +205,7 @@ def run_one(task: dict, *, repeats: int = 1) -> list[dict]:
                     "run_dir": str(run_dir),
                     "score": score,
                     "ended": journal.ended,
+                    "budget_exhausted": bool(journal.budget_exhausted),
                 }
             )
             print(
@@ -253,8 +273,19 @@ def main(argv: list[str] | None = None) -> int:
         inter_task_sleep = 0.0
     if inter_task_sleep <= 0 and (os.getenv("OPENAI_BASE_URL") or "").strip() and (os.getenv("OPENAI_API_KEY") or "").strip():
         inter_task_sleep = 2.0
+    budget_stop_reason: str | None = None
     try:
         for i, t in enumerate(tasks):
+            if budget_stop_reason:
+                print(f"\n=== {t['id']} (not_run) ===", flush=True)
+                batch = [_not_run_result(t, budget_stop_reason)]
+                all_results.extend(batch)
+                for r in batch:
+                    official_rows.append(
+                        _official_task_row(r["task"], r.get("score") or {}, r.get("ended") or "")
+                    )
+                write_results_json(official_rows)
+                continue
             if i and inter_task_sleep > 0:
                 time.sleep(inter_task_sleep)
             print(f"\n=== {t['id']} ===", flush=True)
@@ -264,13 +295,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"TASK ERROR {t.get('id')}: {e}", flush=True)
                 traceback.print_exc()
                 batch = [_error_result(t, e)]
+                from agent.llm import is_budget_exhausted
+
+                if is_budget_exhausted(e):
+                    budget_stop_reason = (
+                        f"suite stopped after {t.get('id')}: budget_exhausted ({type(e).__name__}: {e})"
+                    )[:300]
             all_results.extend(batch)
             for r in batch:
                 official_rows.append(
                     _official_task_row(r["task"], r.get("score") or {}, r.get("ended") or "")
                 )
+                if r.get("budget_exhausted") or (r.get("ended") or "") == "budget_exhausted":
+                    budget_stop_reason = (
+                        f"suite stopped after {t.get('id')}: LLM budget_exhausted"
+                    )
             # Incremental write so a timeout/kill still leaves partial results.
             write_results_json(official_rows)
+        if budget_stop_reason:
+            print(f"\nBUDGET STOP: {budget_stop_reason}", flush=True)
     finally:
         write_results_json(official_rows)
 

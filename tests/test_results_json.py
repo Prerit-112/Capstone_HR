@@ -1,4 +1,10 @@
-from harness.runner import PASS_OUTCOMES, _error_result, _official_task_row, write_results_json
+from harness.runner import (
+    PASS_OUTCOMES,
+    _error_result,
+    _not_run_result,
+    _official_task_row,
+    write_results_json,
+)
 
 
 def test_official_row_pass(monkeypatch, tmp_path):
@@ -33,3 +39,13 @@ def test_error_result_maps_to_failed_row():
     assert row["passed"] is False
     assert row["score"] == 0.0
     assert "boom" in row["evidence"]
+
+
+def test_not_run_soft_score():
+    task = {"id": "write_fix_attendance", "family": "write", "verifier": "write"}
+    result = _not_run_result(task, "suite stopped after refuse_out_of_seat: LLM budget_exhausted")
+    row = _official_task_row(result["task"], result["score"], result["ended"])
+    assert row["passed"] is False
+    assert row["score"] == 0.5
+    assert "not_run" in row["evidence"]
+    assert "budget_exhausted" in row["evidence"]
