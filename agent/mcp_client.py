@@ -19,7 +19,6 @@ from typing import Any, Callable
 import httpx
 
 PROTOCOL_VERSION = "2025-11-25"
-DEFAULT_BASE_URL = "https://agentswitch.theschoolofai.in"
 
 
 class McpError(Exception):
@@ -344,10 +343,11 @@ class McpClient:
 
 
 def client_from_env(*, dotenv_path: Path | str | None = None) -> McpClient:
-    """Build a client from official harness env vars, falling back to local .env login.
+    """Build a client from official harness env vars, falling back to local login.
 
-    Official run: AGENTSWITCH_BASE_URL + AGENTSWITCH_TOKEN (Bearer).
-    Local: AS_BASE_URL + AS_EMAIL + AS_PASSWORD.
+    Official run: AGENTSWITCH_BASE_URL + AGENTSWITCH_TOKEN (Bearer). Never hard-codes
+    a public host — the sandbox address comes only from AGENTSWITCH_BASE_URL.
+    Local: AS_BASE_URL (or AGENTSWITCH_BASE_URL) + AS_EMAIL + AS_PASSWORD.
     """
     if dotenv_path is not None:
         from dotenv import load_dotenv
@@ -355,19 +355,27 @@ def client_from_env(*, dotenv_path: Path | str | None = None) -> McpClient:
         load_dotenv(dotenv_path)
 
     token = (os.getenv("AGENTSWITCH_TOKEN") or "").strip()
-    base = (
-        os.getenv("AGENTSWITCH_BASE_URL")
-        or os.getenv("AS_BASE_URL")
-        or DEFAULT_BASE_URL
-    ).rstrip("/")
+    official_base = (os.getenv("AGENTSWITCH_BASE_URL") or "").strip().rstrip("/")
+    local_base = (os.getenv("AS_BASE_URL") or "").strip().rstrip("/")
 
     if token:
-        return McpClient(base_url=base, token=token)
+        if not official_base:
+            raise RuntimeError(
+                "AGENTSWITCH_TOKEN is set but AGENTSWITCH_BASE_URL is missing — "
+                "use the sandbox URL from the harness env (do not hard-code a public host)"
+            )
+        return McpClient(base_url=official_base, token=token)
+
+    base = official_base or local_base
+    if not base:
+        raise RuntimeError(
+            "Set AGENTSWITCH_BASE_URL (official harness) or AS_BASE_URL (local)"
+        )
 
     email = (os.getenv("AS_EMAIL") or "team13@theschoolofai.in").strip()
     password = (os.getenv("AS_PASSWORD") or "").strip()
     if not password:
         raise RuntimeError(
-            "Set AGENTSWITCH_TOKEN (official harness) or AS_PASSWORD (local .env)"
+            "Set AGENTSWITCH_TOKEN (official harness) or AS_PASSWORD (local)"
         )
     return McpClient(base_url=base, email=email, password=password)

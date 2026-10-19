@@ -50,6 +50,35 @@ def test_client_from_env_prefers_token(monkeypatch):
     c.close()
 
 
+def test_client_from_env_token_requires_agentswitch_base_url(monkeypatch):
+    monkeypatch.setenv("AGENTSWITCH_TOKEN", "seat-token")
+    monkeypatch.delenv("AGENTSWITCH_BASE_URL", raising=False)
+    monkeypatch.setenv("AS_BASE_URL", "https://public.example")  # must not be used for token auth
+    with pytest.raises(RuntimeError, match="AGENTSWITCH_BASE_URL"):
+        client_from_env()
+
+
+def test_client_from_env_local_requires_base_url(monkeypatch):
+    monkeypatch.delenv("AGENTSWITCH_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTSWITCH_BASE_URL", raising=False)
+    monkeypatch.delenv("AS_BASE_URL", raising=False)
+    monkeypatch.setenv("AS_PASSWORD", "secret")
+    with pytest.raises(RuntimeError, match="AS_BASE_URL"):
+        client_from_env()
+
+
+def test_client_from_env_local_uses_as_base_url(monkeypatch):
+    monkeypatch.delenv("AGENTSWITCH_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTSWITCH_BASE_URL", raising=False)
+    monkeypatch.setenv("AS_BASE_URL", "https://local.example")
+    monkeypatch.setenv("AS_EMAIL", "team13@test")
+    monkeypatch.setenv("AS_PASSWORD", "secret")
+    c = client_from_env()
+    assert c.base_url == "https://local.example"
+    assert c.email == "team13@test"
+    c.close()
+
+
 def test_closed_schema():
     cat = Catalogue(tools={
         "Attendance.list": ToolSpec(

@@ -40,8 +40,15 @@ def list_tasks() -> list[Path]:
     return sorted(TASKS_DIR.glob("*.json"))
 
 
+def _maybe_load_local_dotenv() -> None:
+    """Local convenience only — official harness has no .env; missing file is a no-op."""
+    env_path = ROOT / ".env"
+    if env_path.is_file():
+        load_dotenv(env_path)
+
+
 def build_client():
-    load_dotenv(ROOT / ".env")
+    _maybe_load_local_dotenv()
     return client_from_env()
 
 
@@ -242,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args(argv)
 
-    load_dotenv(ROOT / ".env")
+    _maybe_load_local_dotenv()
     RUNS_DIR.mkdir(exist_ok=True)
 
     if args.list:

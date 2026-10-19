@@ -19,7 +19,7 @@ copy .env.example .env
 
 Credentials stay in `.env` only (never commit). Seat passwords are in your team channel / local `project_breif.txt`.
 
-**Auth:** local uses `AS_EMAIL` / `AS_PASSWORD`; the official runner injects `AGENTSWITCH_BASE_URL` + `AGENTSWITCH_TOKEN` (Bearer) — no `.env`.
+**Auth:** local uses `AS_BASE_URL` + `AS_EMAIL` / `AS_PASSWORD`; the official runner injects `AGENTSWITCH_BASE_URL` + `AGENTSWITCH_TOKEN` (Bearer) — no `.env`, and the code never falls back to a hard-coded public URL.
 
 **Model:** local Gemini via OpenAI-compatible API (`GEMINI_API_KEY`). Official run sets `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` — those take priority when present.
 
