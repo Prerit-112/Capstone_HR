@@ -11,10 +11,10 @@ from typing import Any
 
 from openai import OpenAI
 
-from agent.capabilities import is_refusal_prompt, missing_helpers, nudge_for_missing
+from agent.capabilities import is_refusal_prompt, missing_helpers, nudge_for_missing, tools_for_task
 from agent.catalogue import KNOWN_BLOCKED, READ_TOOLS, WRITE_TOOLS, Catalogue
 from agent.gemini_compat import serialize_tool_calls
-from agent.helpers import HELPER_NAMES, HELPER_TOOLS, run_helper
+from agent.helpers import HELPER_NAMES, run_helper
 from agent.journal import RunJournal, Step
 from agent.llm import (
     BudgetExhaustedError,
@@ -126,7 +126,7 @@ class HrAgent:
         self.catalogue = catalogue
         self.model = model or resolve_model()
         self.model_chain = resolve_fallbacks(self.model)
-        self.max_steps = max_steps or int(os.getenv("AGENT_MAX_STEPS", "24"))
+        self.max_steps = max_steps or int(os.getenv("AGENT_MAX_STEPS", "10"))
         self.llm = openai_client if openai_client is not None else build_llm_client()
         # Cache of last-seen records for re-read-before-write.
         self._seen: dict[str, dict[str, Any]] = {}  # "Entity:id" -> record
@@ -150,15 +150,20 @@ class HrAgent:
             allow_writes=allow_writes,
         )
 
-        tools = self.catalogue.openai_tools(
+        tools = tools_for_task(
+            self.catalogue,
+            prompt,
             allow_writes=allow_writes,
             write_allowlist=write_allowlist,
         )
-        # Prefer scan helpers for exception briefs (correct date paging + rules).
-        tools = list(HELPER_TOOLS) + tools
-        name_map = {t["function"]["name"]: Catalogue.wire_name(t["function"]["name"]) for t in tools}
-        for h in HELPER_TOOLS:
-            name_map[h["function"]["name"]] = h["function"]["name"]
+        name_map = {
+            t["function"]["name"]: (
+                t["function"]["name"]
+                if t["function"]["name"].startswith("hr__")
+                else Catalogue.wire_name(t["function"]["name"])
+            )
+            for t in tools
+        }
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -173,18 +178,19 @@ class HrAgent:
 
         try:
             for _ in range(self.max_steps):
-                journal.calls += 1
                 _compact_messages(messages, allow_writes=allow_writes)
-                approx = estimate_message_tokens(messages, tools or None)
-                journal.approx_tokens = max(journal.approx_tokens, approx)
-                if approx > token_limit:
+                # Hard ceiling: stop if the next billed call would push the task past the limit.
+                next_call = estimate_message_tokens(messages, tools or None)
+                if journal.approx_tokens + next_call > token_limit:
                     journal.error = (
-                        f"token_budget: estimated {approx} tokens exceeds per-task limit {token_limit}"
+                        f"token_budget: task used {journal.approx_tokens} tokens, next call "
+                        f"~{next_call} would exceed limit {token_limit}"
                     )
                     journal.add(Step("error", "token_budget", False, journal.error))
                     return self._finish_after_llm_failure(
                         journal, as_of=as_of, ended_hint="token_budget"
                     )
+                journal.calls += 1
                 try:
                     resp, used_model = chat_with_fallback(
                         self.llm,
@@ -229,14 +235,15 @@ class HrAgent:
                     journal.add(Step("error", "llm", False, journal.error))
                     return self._finish_after_llm_failure(journal, as_of=as_of)
 
+                used = 0
                 usage = getattr(resp, "usage", None)
                 if usage is not None:
-                    prompt_tok = int(getattr(usage, "prompt_tokens", 0) or 0)
-                    completion_tok = int(getattr(usage, "completion_tokens", 0) or 0)
-                    if prompt_tok or completion_tok:
-                        journal.approx_tokens = max(
-                            journal.approx_tokens, prompt_tok + completion_tok
-                        )
+                    used = int(getattr(usage, "prompt_tokens", 0) or 0) + int(
+                        getattr(usage, "completion_tokens", 0) or 0
+                    )
+                if used <= 0:
+                    used = estimate_message_tokens(messages, tools or None)
+                journal.approx_tokens += used
 
                 choices = getattr(resp, "choices", None) or []
                 if not choices:
@@ -323,7 +330,7 @@ class HrAgent:
                         }
                     )
                     continue
-                if not refused:
+                if not refused and not allow_writes:
                     missing = missing_helpers(prompt, journal.steps, as_of=as_of)
                     if missing:
                         journal.add(

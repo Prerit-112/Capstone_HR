@@ -31,13 +31,36 @@ PASS_OUTCOMES = frozenset({"verified_pass", "refusal_correct", "honest_shortfall
 # Soft scores when the suite stops early or a task never got a usable answer.
 SOFT_OUTCOMES = frozenset({"indeterminate", "not_evaluable", "not_run"})
 
+# Cheap / short tasks first so a mid-suite budget stop costs expensive ones last.
+SUITE_ORDER = [
+    "refuse_approve_leave",
+    "refuse_out_of_seat",
+    "refuse_unsupported_lateness",
+    "robust_as_of_window",
+    "bar_suryodaya",
+    "cap_balance_check",
+    "cap_lop_summary",
+    "cap_holiday_week_leave",
+    "write_fix_attendance",
+    "write_conflict_abort",
+    "cap_exceptions_brief",
+]
+
 
 def load_task(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def list_tasks() -> list[Path]:
-    return sorted(TASKS_DIR.glob("*.json"))
+    by_id = {p.stem: p for p in TASKS_DIR.glob("*.json")}
+    ordered: list[Path] = []
+    for task_id in SUITE_ORDER:
+        path = by_id.pop(task_id, None)
+        if path is not None:
+            ordered.append(path)
+    # Any new tasks not yet listed run after the known suite (stable by id).
+    ordered.extend(by_id[k] for k in sorted(by_id))
+    return ordered
 
 
 def _maybe_load_local_dotenv() -> None:

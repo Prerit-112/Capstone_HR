@@ -123,6 +123,27 @@ HELPER_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "hr__find_attendance_to_fix",
+            "description": (
+                "For write tasks: find Attendance rows anywhere in the book that look wrong and are "
+                "safe to correct — present_with_null_punches, is_lop_with_zero_hours, or "
+                "check_out_before_check_in. Not limited to recent days. Returns a few compact "
+                "candidates (attendance_id, employee_id, date, status, reason). "
+                "Then Attendance.get the chosen id before Attendance.update."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_candidates": {"type": "integer", "default": 5},
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "hr__scan_holidays",
             "description": (
                 "List HolidayList records and expand child holiday dates. "
@@ -176,7 +197,57 @@ def run_helper(mcp: McpClient, name: str, args: dict[str, Any]) -> Any:
         return _scan_balances(mcp, args)
     if name == "hr__scan_holidays":
         return _scan_holidays(mcp, args)
+    if name == "hr__find_attendance_to_fix":
+        return _find_attendance_to_fix(mcp, args)
     return {"error": f"unknown helper {name}"}
+
+
+# Reasons a write task may correct; ordered by preference.
+WRITE_FIX_REASONS = ("present_with_null_punches", "is_lop_with_zero_hours", "check_out_before_check_in")
+_FIX_SCAN_PAGES = 3
+
+
+def _find_attendance_to_fix(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        limit = max(1, min(10, int(args.get("max_candidates") or 5)))
+    except (TypeError, ValueError):
+        limit = 5
+    page = mcp.list_all("Attendance.list", {"limit": 100}, max_pages=_FIX_SCAN_PAGES)
+    rows = page["items"]
+    by_id = {str(r.get("id") or ""): r for r in rows}
+    flags = [f for f in flag_attendance(rows) if f.reason in WRITE_FIX_REASONS]
+    flags.sort(key=lambda f: WRITE_FIX_REASONS.index(f.reason))
+    candidates = []
+    seen: set[str] = set()
+    for f in flags:
+        if f.attendance_id in seen:
+            continue
+        seen.add(f.attendance_id)
+        row = by_id.get(f.attendance_id) or {}
+        candidates.append(
+            {
+                "attendance_id": f.attendance_id,
+                "employee_id": f.employee_id,
+                "date": f.date,
+                "status": row.get("status"),
+                "check_in": row.get("check_in"),
+                "check_out": row.get("check_out"),
+                "reason": f.reason,
+            }
+        )
+        if len(candidates) >= limit:
+            break
+    out: dict[str, Any] = {
+        "rows_scanned": len(rows),
+        "candidates": candidates,
+        "partial_error": page.get("partial_error"),
+    }
+    if not candidates:
+        out["warning"] = (
+            f"No write-eligible rows in the first {len(rows)} Attendance rows. "
+            "Refuse with escalate_to describing this search — do not invent a row."
+        )
+    return out
 
 
 def _scan_attendance(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:

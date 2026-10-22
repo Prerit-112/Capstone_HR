@@ -254,10 +254,11 @@ def test_agent_sets_budget_exhausted_flag(monkeypatch):
     assert journal.ended == "budget_exhausted"
 
 
-def test_agent_stops_on_per_task_token_limit(monkeypatch):
-    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "50")
+def test_agent_stops_on_cumulative_task_token_limit(monkeypatch):
+    """Stop before the next LLM call once prompt+completion usage hits the task ceiling."""
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "5000")
 
-    class CountingLlm:
+    class UsageLlm:
         def __init__(self):
             self.calls = 0
             self.chat = self
@@ -268,16 +269,66 @@ def test_agent_stops_on_per_task_token_limit(monkeypatch):
 
         def create(self, **_kwargs):
             self.calls += 1
-            return _text_response('{"findings":{},"actions_taken":[],"uncertain":[],'
-                                  '"refused":{"is_refusal":false,"why":"","escalate_to":""},'
-                                  '"claimed_success":false,"as_of":"2026-10-05"}')
+            # First call burns the whole task budget; second must not be billed.
+            if self.calls == 1:
+                resp = _tool_response("hr__scan_leave_window", {"as_of": "2026-10-05"})
+                resp.usage = SimpleNamespace(prompt_tokens=4800, completion_tokens=300)
+                return resp
+            resp = _text_response(
+                '{"findings":{"on_leave":[],"attendance_flags":[],"confirmation_due":[]},'
+                '"actions_taken":[],"uncertain":[],'
+                '"refused":{"is_refusal":false,"why":"","escalate_to":""},'
+                '"claimed_success":false,"as_of":"2026-10-05"}'
+            )
+            resp.usage = SimpleNamespace(prompt_tokens=50, completion_tokens=20)
+            return resp
 
     from agent.catalogue import Catalogue
 
-    llm = CountingLlm()
+    llm = UsageLlm()
+    agent = HrAgent(FakeMcp(), Catalogue(tools={}), openai_client=llm, max_steps=5)
+
+    def fake_dispatch(journal, name, args, **kwargs):
+        journal.tool_calls += 1
+        journal.helper_results[name] = {"on_leave": []}
+        journal.add(Step("tool", name, True, args=args))
+        return {"on_leave": []}
+
+    agent._dispatch_tool = fake_dispatch  # type: ignore[method-assign]
+
+    journal = agent.run(
+        "Who is on leave next week, whose attendance does not look right, and who is due for confirmation?",
+        task_id="token_cap",
+        as_of="2026-10-05",
+    )
+    assert journal.ended == "token_budget"
+    assert llm.calls == 1
+    assert journal.approx_tokens >= 5000
+    assert "token_budget" in journal.error
+    assert journal.final_answer is not None  # partial recovery from helpers
+
+
+def test_agent_skips_call_that_would_exceed_task_limit(monkeypatch):
+    """A prompt larger than the remaining budget is never sent."""
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "1000")
+
+    class NeverLlm:
+        def __init__(self):
+            self.calls = 0
+            self.chat = self
+
+        @property
+        def completions(self):
+            return self
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            raise AssertionError("LLM must not be called")
+
+    from agent.catalogue import Catalogue
+
+    llm = NeverLlm()
     agent = HrAgent(FakeMcp(), Catalogue(tools={}), openai_client=llm, max_steps=3)
-    # Inflate the initial user message past the tiny limit via a huge prompt.
-    journal = agent.run("x" * 500, task_id="token_cap")
+    journal = agent.run("x" * 8000, task_id="token_cap")
     assert journal.ended == "token_budget"
     assert llm.calls == 0
-    assert "token_budget" in journal.error

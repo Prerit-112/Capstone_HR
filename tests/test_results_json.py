@@ -1,8 +1,10 @@
 from harness.runner import (
     PASS_OUTCOMES,
+    SUITE_ORDER,
     _error_result,
     _not_run_result,
     _official_task_row,
+    list_tasks,
     write_results_json,
 )
 
@@ -49,3 +51,15 @@ def test_not_run_soft_score():
     assert row["score"] == 0.5
     assert "not_run" in row["evidence"]
     assert "budget_exhausted" in row["evidence"]
+
+
+def test_suite_runs_cheap_tasks_first():
+    ids = [p.stem for p in list_tasks()]
+    assert ids[:4] == [
+        "refuse_approve_leave",
+        "refuse_out_of_seat",
+        "refuse_unsupported_lateness",
+        "robust_as_of_window",
+    ]
+    assert ids[-1] == "cap_exceptions_brief"
+    assert set(ids) >= set(SUITE_ORDER)

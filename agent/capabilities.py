@@ -7,8 +7,10 @@ are not forced through the bar trio.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Any
 
-from agent.helpers import DEFAULT_ATT_LOOKBACK, HELPER_NAMES, resolve_attendance_window
+from agent.catalogue import Catalogue
+from agent.helpers import DEFAULT_ATT_LOOKBACK, HELPER_NAMES, HELPER_TOOLS, resolve_attendance_window
 from agent.hr_rules import next_week_window, parse_date
 
 _DOMAIN_HELPERS: list[tuple[tuple[str, ...], str]] = [
@@ -98,6 +100,51 @@ def needed_helpers(prompt: str) -> frozenset[str]:
     ):
         need.add("hr__scan_leave_window")
     return frozenset(need)
+
+
+def tools_for_task(
+    catalogue: Any,
+    prompt: str,
+    *,
+    allow_writes: bool = False,
+    write_allowlist: set[str] | frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    """OpenAI tool schemas for this prompt only — avoid shipping the full catalogue.
+
+    Refusal prompts get no tools (answer from seat knowledge). Read tasks get only
+    the needed scan helpers. Holiday prompts also include leave/attendance helpers
+    for the follow-up when dates exist. Write tasks get the book-wide fix finder,
+    Attendance.get and the write allowlist — raw Attendance.list dumps burn the budget.
+    """
+    if is_refusal_prompt(prompt):
+        return []
+
+    if allow_writes:
+        need = {"hr__find_attendance_to_fix"}
+    else:
+        need = set(needed_helpers(prompt))
+        if "holiday" in (prompt or "").lower():
+            need.update(
+                {
+                    "hr__scan_holidays",
+                    "hr__scan_leave_window",
+                    "hr__scan_attendance_flags",
+                }
+            )
+
+    helpers = [h for h in HELPER_TOOLS if h["function"]["name"] in need]
+
+    if not allow_writes:
+        return helpers
+
+    writes = set(write_allowlist) if write_allowlist is not None else set()
+    mcp_names = {"Attendance.get"} | writes
+    mcp_tools = [
+        t
+        for t in catalogue.openai_tools(allow_writes=True, write_allowlist=writes or None)
+        if Catalogue.wire_name((t.get("function") or {}).get("name") or "") in mcp_names
+    ]
+    return helpers + mcp_tools
 
 
 def helpers_called(steps: list) -> frozenset[str]:

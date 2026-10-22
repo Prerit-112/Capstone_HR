@@ -41,6 +41,7 @@ class RunJournal:
     helper_results: dict[str, Any] = field(default_factory=dict)
     # Suite-level stop: platform run budget gone — runner skips remaining tasks.
     budget_exhausted: bool = False
+    # Cumulative billed tokens for this task (prompt+completion across LLM calls).
     approx_tokens: int = 0
 
     def add(self, step: Step) -> None:

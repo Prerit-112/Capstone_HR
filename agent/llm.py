@@ -19,8 +19,9 @@ DEFAULT_FALLBACKS = (
     "gemini-2.5-flash",
 )
 
-# Soft per-task ceiling so 11 tasks stay well under a ~500k run budget.
-DEFAULT_TASK_TOKEN_LIMIT = 28_000
+# Cumulative billed tokens per task (prompt+completion across steps).
+# ~40k × 11 ≈ 440k, leaving headroom under a ~500k run budget.
+DEFAULT_TASK_TOKEN_LIMIT = 40_000
 
 
 class BudgetExhaustedError(Exception):
@@ -46,7 +47,7 @@ def is_budget_exhausted(exc: BaseException) -> bool:
 
 
 def resolve_task_token_limit() -> int:
-    """Max estimated prompt tokens per task before we stop and recover (~25–30k)."""
+    """Max cumulative usage tokens (prompt+completion) per task before stop+recover."""
     raw = (os.getenv("LLM_TASK_TOKEN_LIMIT") or "").strip()
     if raw:
         try:

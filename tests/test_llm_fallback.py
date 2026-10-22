@@ -71,7 +71,7 @@ def test_budget_exhausted_not_retryable():
 
 def test_task_token_limit_default(monkeypatch):
     monkeypatch.delenv("LLM_TASK_TOKEN_LIMIT", raising=False)
-    assert resolve_task_token_limit() == 28_000
+    assert resolve_task_token_limit() == 40_000
     monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "25000")
     assert resolve_task_token_limit() == 25_000
 

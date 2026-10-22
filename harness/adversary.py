@@ -128,5 +128,18 @@ class ConflictHrAgent(HrAgent):
 def restore_attendance(mcp, original: dict[str, Any] | None) -> None:
     if not original or not original.get("id"):
         return
-    payload = attendance_update_payload(original)
-    mcp.tools_call("Attendance.update", payload)
+    try:
+        mcp.tools_call("Attendance.update", attendance_update_payload(original))
+    except Exception:
+        # Rows with invalid punches (check_out before check_in) reject a full re-PUT;
+        # mirror the minimal poison payload so the overtime/shift change is undone.
+        minimal: dict[str, Any] = {
+            "id": original["id"],
+            "employee_id": original.get("employee_id"),
+            "date": str(original.get("date") or "")[:10],
+            "status": original.get("status"),
+            "overtime_hours": _as_float(original.get("overtime_hours"), 0.0),
+        }
+        if original.get("shift") is not None:
+            minimal["shift"] = original.get("shift")
+        mcp.tools_call("Attendance.update", minimal)

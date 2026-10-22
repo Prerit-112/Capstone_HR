@@ -189,3 +189,39 @@ def test_att_payload_keeps_punches():
     p3 = attendance_update_payload(lop_row, overtime_hours=0.25)
     assert p3["is_lop"] is True
     assert isinstance(p3["lop_hours"], float)
+
+
+def test_restore_falls_back_when_punches_invalid():
+    from harness.adversary import restore_attendance
+
+    class Mcp:
+        def __init__(self):
+            self.calls = []
+
+        def tools_call(self, name, payload):
+            self.calls.append(payload)
+            if "check_in" in payload:
+                raise RuntimeError("Check-out time must be after check-in time")
+            return {"ok": True}
+
+    original = {
+        "id": "a1",
+        "employee_id": "e1",
+        "date": "2026-09-24",
+        "status": "absent",
+        "check_in": "08:00",
+        "check_out": "06:00",
+        "overtime_hours": 0.0,
+        "shift": "note",
+    }
+    mcp = Mcp()
+    restore_attendance(mcp, original)
+    assert len(mcp.calls) == 2
+    assert mcp.calls[1] == {
+        "id": "a1",
+        "employee_id": "e1",
+        "date": "2026-09-24",
+        "status": "absent",
+        "overtime_hours": 0.0,
+        "shift": "note",
+    }

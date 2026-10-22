@@ -16,6 +16,7 @@ Answer HR questions using live book data. Compose multi-step answers yourself. W
    - confirmation due → hr__scan_confirmation_due
    - balances vs types → hr__scan_leave_balances
    - holidays → hr__scan_holidays
+   - picking a row to correct (write tasks) → hr__find_attendance_to_fix (searches the whole book)
 4. **Window split:** leave "next week" is the next Monday–Sunday after as_of. Attendance quality is recorded days ending at as_of (default lookback 14). Never reuse the next-week leave dates for attendance.
 5. Attendance.list filters on field `date` (YYYY-MM-DD equality), NOT check_in.
 6. LeaveApplication.list date filters are equality, not range overlap. Status for pending is `pending_approval`, not `pending`.
