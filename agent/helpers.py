@@ -216,7 +216,13 @@ def _find_attendance_to_fix(mcp: McpClient, args: dict[str, Any]) -> dict[str, A
     rows = page["items"]
     by_id = {str(r.get("id") or ""): r for r in rows}
     flags = [f for f in flag_attendance(rows) if f.reason in WRITE_FIX_REASONS]
-    flags.sort(key=lambda f: WRITE_FIX_REASONS.index(f.reason))
+    # Rows already marked absent were usually corrected earlier; offer untouched rows first.
+    flags.sort(
+        key=lambda f: (
+            str((by_id.get(f.attendance_id) or {}).get("status") or "").lower() == "absent",
+            WRITE_FIX_REASONS.index(f.reason),
+        )
+    )
     candidates = []
     seen: set[str] = set()
     for f in flags:

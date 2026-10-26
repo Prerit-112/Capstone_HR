@@ -69,6 +69,10 @@ class ConflictHrAgent(HrAgent):
     """Mutate the live row after the agent has cached it, before its write.
 
     Proves the shared-book re-read abort. Restore `restore` after the run.
+    Some rows reject every PUT (e.g. present with check_out before check_in needs
+    punches, but the original punches fail validation). Then the concurrent edit is
+    simulated by making the agent's cached snapshot stale — the same re-read
+    fingerprint path fires and the live book is left untouched.
     """
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -111,14 +115,18 @@ class ConflictHrAgent(HrAgent):
                         last_err = e
                 if not poisoned:
                     self.restore = None
+                    self._poisoned = True
+                    stale = dict(current)
+                    stale["overtime_hours"] = 0.0 if _as_float(current.get("overtime_hours"), 0.0) else 0.25
+                    self._seen[f"Attendance:{rid}"] = stale
                     from agent.journal import Step
 
                     journal.add(
                         Step(
                             "guard",
                             "adversary_poison",
-                            False,
-                            f"poison failed: {last_err}",
+                            True,
+                            f"live poison rejected ({last_err}); simulated concurrent edit via stale snapshot",
                             args={"id": rid},
                         )
                     )

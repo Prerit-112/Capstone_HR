@@ -191,6 +191,58 @@ def test_att_payload_keeps_punches():
     assert isinstance(p3["lop_hours"], float)
 
 
+def test_conflict_agent_aborts_when_live_poison_rejected():
+    from agent.catalogue import Catalogue, ToolSpec
+    from harness.adversary import ConflictHrAgent
+
+    row = {
+        "id": "a1",
+        "employee_id": "e1",
+        "date": "2026-09-12",
+        "status": "present",
+        "check_in": "22:00",
+        "check_out": "06:00",
+        "overtime_hours": 0.0,
+        "shift": "night",
+    }
+
+    class Mcp:
+        def __init__(self):
+            self.updates = 0
+
+        def tools_call(self, name, args):
+            if name == "Attendance.get":
+                return dict(row)
+            self.updates += 1
+            raise RuntimeError("Check In is required when Status is present")
+
+        def dump_wire_log(self):
+            return []
+
+    schema = {"type": "object", "properties": {}}
+    cat = Catalogue(
+        tools={
+            "Attendance.get": ToolSpec("Attendance.get", "get", schema),
+            "Attendance.update": ToolSpec("Attendance.update", "update", schema),
+        }
+    )
+    mcp = Mcp()
+    agent = ConflictHrAgent(mcp, cat, openai_client=object())
+    journal = RunJournal(task_id="write_conflict_abort")
+    result = agent._dispatch_tool(
+        journal,
+        "Attendance.update",
+        {"id": "a1", "employee_id": "e1", "date": "2026-09-12", "status": "absent"},
+        allow_writes=True,
+        write_allowlist={"Attendance.update"},
+        run_id="t-1",
+    )
+    assert result["refused"] is True
+    assert any("shared_book_conflict" in (s.detail or "") for s in journal.steps)
+    assert mcp.updates == 2  # both poison attempts; the agent's write never ran
+    assert agent.restore is None
+
+
 def test_restore_falls_back_when_punches_invalid():
     from harness.adversary import restore_attendance
 

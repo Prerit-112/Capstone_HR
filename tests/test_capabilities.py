@@ -188,6 +188,24 @@ def test_find_attendance_to_fix_prefers_null_punches():
     assert out["candidates"][0]["reason"] == "present_with_null_punches"
 
 
+def test_find_attendance_to_fix_offers_uncorrected_rows_first():
+    from agent.helpers import run_helper
+
+    rows = [
+        {"id": "done", "employee_id": "e1", "date": "2026-09-01", "status": "absent",
+         "check_in": "08:00", "check_out": "06:00"},
+        {"id": "todo", "employee_id": "e2", "date": "2026-09-02", "status": "present",
+         "check_in": "18:00", "check_out": "09:00"},
+    ]
+
+    class Mcp:
+        def list_all(self, *_a, **_kw):
+            return {"items": rows}
+
+    out = run_helper(Mcp(), "hr__find_attendance_to_fix", {})
+    assert [c["attendance_id"] for c in out["candidates"]] == ["todo", "done"]
+
+
 def test_find_attendance_to_fix_empty_warns():
     from agent.helpers import run_helper
 
