@@ -11,7 +11,13 @@ from typing import Any
 
 from openai import OpenAI
 
-from agent.capabilities import is_refusal_prompt, missing_helpers, nudge_for_missing, tools_for_task
+from agent.capabilities import (
+    is_refusal_prompt,
+    missing_helpers,
+    needed_helpers,
+    nudge_for_missing,
+    tools_for_task,
+)
 from agent.catalogue import KNOWN_BLOCKED, READ_TOOLS, WRITE_TOOLS, Catalogue
 from agent.gemini_compat import serialize_tool_calls
 from agent.helpers import HELPER_NAMES, run_helper
@@ -32,6 +38,13 @@ from agent.prompts import SYSTEM_PROMPT, user_message
 _TOOL_CONTENT_LIMIT_READ = 8_000
 _TOOL_CONTENT_LIMIT_WRITE = 3_500
 _COMPACT_TOOL_LIMIT = 600
+# Past this share of the task token limit, ask for the final answer and stop running tools.
+_WRAP_UP_FRACTION = 0.6
+_WRAP_UP_MESSAGE = (
+    "Token budget for this task is nearly used. Do not call any more tools. "
+    "Reply now with ONLY the final JSON object, using the data you already have; "
+    "put anything you could not check in uncertain."
+)
 
 
 def _excerpt(obj: Any, limit: int = 800) -> str:
@@ -174,13 +187,28 @@ class HrAgent:
         ]
 
         token_limit = resolve_task_token_limit()
+        # Write tasks never wrap up early: stopping before the write is always a fail.
+        wrap_up_at = token_limit if allow_writes else int(token_limit * _WRAP_UP_FRACTION)
+        wrap_up = False
         tool_limit = _tool_content_limit(allow_writes=allow_writes)
 
         try:
             for _ in range(self.max_steps):
                 _compact_messages(messages, allow_writes=allow_writes)
-                # Hard ceiling: stop if the next billed call would push the task past the limit.
                 next_call = estimate_message_tokens(messages, tools or None)
+                if not wrap_up and journal.approx_tokens + next_call > wrap_up_at:
+                    wrap_up = True
+                    journal.add(
+                        Step(
+                            "guard",
+                            "token_wrap_up",
+                            True,
+                            f"used {journal.approx_tokens} of {token_limit} tokens; asking for final JSON",
+                        )
+                    )
+                    messages.append({"role": "user", "content": _WRAP_UP_MESSAGE})
+                    next_call = estimate_message_tokens(messages, tools or None)
+                # Hard ceiling: stop if the next billed call would push the task past the limit.
                 if journal.approx_tokens + next_call > token_limit:
                     journal.error = (
                         f"token_budget: task used {journal.approx_tokens} tokens, next call "
@@ -254,6 +282,11 @@ class HrAgent:
                 choice = choices[0]
                 msg = choice.message
                 tool_calls = msg.tool_calls or []
+
+                if tool_calls and wrap_up:
+                    journal.error = "token_budget: tool call after wrap-up request; finishing from data gathered"
+                    journal.add(Step("error", "token_budget", False, journal.error))
+                    return self._finish_after_llm_failure(journal, as_of=as_of, ended_hint="token_budget")
 
                 if tool_calls:
                     messages.append(
@@ -332,7 +365,9 @@ class HrAgent:
                     continue
                 if not refused and not allow_writes:
                     missing = missing_helpers(prompt, journal.steps, as_of=as_of)
-                    if missing:
+                    if missing and wrap_up:
+                        self._backfill_helpers(journal, as_of=as_of)
+                    elif missing:
                         journal.add(
                             Step(
                                 "guard",
@@ -374,6 +409,7 @@ class HrAgent:
         ended_hint: str | None = None,
     ) -> RunJournal:
         """Turn a mid-run LLM/transport failure into an honest evaluable answer when possible."""
+        self._backfill_helpers(journal, as_of=as_of)
         recovered = _recover_final_answer(journal, as_of=as_of, error=journal.error or "llm_error")
         if recovered is not None:
             journal.final_answer = recovered
@@ -385,6 +421,29 @@ class HrAgent:
             journal.finish(ended_hint or "llm_error")
         journal.wire_log = self.mcp.dump_wire_log()
         return journal
+
+    def _backfill_helpers(self, journal: RunJournal, *, as_of: str) -> None:
+        """Run read helpers the ask needs but the model never called — MCP only, no LLM tokens."""
+        if journal.allow_writes or is_refusal_prompt(journal.prompt):
+            return
+        # Two rounds: a non-empty holiday scan adds leave + attendance helpers.
+        for _ in range(2):
+            missing = set(missing_helpers(journal.prompt, journal.steps, as_of=as_of))
+            missing |= set(needed_helpers(journal.prompt)) - set(journal.helper_results)
+            if not missing:
+                return
+            for name in sorted(missing):
+                try:
+                    self._dispatch_tool(
+                        journal,
+                        name,
+                        {"as_of": as_of},
+                        allow_writes=False,
+                        write_allowlist=None,
+                        run_id="backfill",
+                    )
+                except Exception as e:
+                    journal.add(Step("error", name, False, f"backfill failed: {e}"))
 
     def _dispatch_tool(
         self,

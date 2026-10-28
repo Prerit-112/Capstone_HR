@@ -10,6 +10,7 @@ from typing import Any
 
 from agent.hr_rules import (
     confirmation_due,
+    employee_display_name,
     flag_attendance,
     holiday_dates,
     leaves_in_window,
@@ -376,18 +377,26 @@ def _scan_balances(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
     by_code = {(t.get("code") or "").strip(): t for t in types if t.get("code")}
     by_id = {str(t.get("id")): t for t in types if t.get("id")}
 
-    rows = bal_page["items"]
-    if emp_id:
-        rows = [r for r in rows if str(r.get("employee_id") or "") == emp_id]
-    else:
-        counts: dict[str, int] = {}
-        for r in rows:
-            eid = str(r.get("employee_id") or "")
-            if eid:
-                counts[eid] = counts.get(eid, 0) + 1
-        if counts:
-            emp_id = max(counts, key=counts.get)
-            rows = [r for r in rows if str(r.get("employee_id") or "") == emp_id]
+    emp_page = mcp.list_all("Employee.list", {"limit": 100, "status": "active"}, max_pages=20)
+    active = {str(e.get("id")): e for e in emp_page["items"] if e.get("id")}
+
+    all_rows = bal_page["items"]
+    counts: dict[str, int] = {}
+    for r in all_rows:
+        eid = str(r.get("employee_id") or "")
+        if eid:
+            counts[eid] = counts.get(eid, 0) + 1
+
+    note = ""
+    if emp_id and not counts.get(emp_id):
+        note = f"employee_id {emp_id} has no LeaveBalance rows; picked an active employee who does."
+        emp_id = None
+    if not emp_id and counts:
+        pool = {e: n for e, n in counts.items() if e in active} or counts
+        # Most rows first; id breaks ties so repeated calls pick the same person.
+        emp_id = sorted(pool, key=lambda e: (-pool[e], e))[0]
+    rows = [r for r in all_rows if str(r.get("employee_id") or "") == emp_id] if emp_id else []
+    emp = active.get(emp_id or "")
 
     empty_types = len(types) == 0
     balances = []
@@ -408,11 +417,17 @@ def _scan_balances(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:
         )
     out: dict[str, Any] = {
         "employee_id": emp_id,
+        "employee_name": employee_display_name(emp) if emp else None,
+        "employee_status": "active" if emp else "not in active Employee.list",
         "leave_type_catalogue_empty": empty_types,
         "leave_type_rows": len(types),
         "balances": balances,
-        "partial_error": bal_page.get("partial_error") or type_page.get("partial_error"),
+        "partial_error": bal_page.get("partial_error")
+        or type_page.get("partial_error")
+        or emp_page.get("partial_error"),
     }
+    if note:
+        out["note"] = note
     if empty_types:
         out["warning"] = (
             "LeaveType.list returned 0 rows. Report live LeaveBalance figures only; "

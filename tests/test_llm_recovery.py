@@ -332,3 +332,113 @@ def test_agent_skips_call_that_would_exceed_task_limit(monkeypatch):
     journal = agent.run("x" * 8000, task_id="token_cap")
     assert journal.ended == "token_budget"
     assert llm.calls == 0
+
+
+class BalanceMcp(FakeMcp):
+    def list_all(self, tool, arguments=None, **kw):
+        if tool == "LeaveBalance.list":
+            items = [
+                {"id": "b1", "employee_id": "e1", "leave_type": "casual", "balance_days": 4, "used_days": 1},
+                {"id": "b2", "employee_id": "e1", "leave_type": "sick", "balance_days": 6, "used_days": 0},
+            ]
+        elif tool == "Employee.list":
+            items = [{"id": "e1", "status": "active", "first_name": "Asha"}]
+        else:
+            items = []
+        return {"items": items, "total": len(items), "pages": 1, "partial_error": None}
+
+
+BALANCE_PROMPT = (
+    "Pick one active employee who has a LeaveBalance row. Put every LeaveBalance for that "
+    "person in findings.leave_balances."
+)
+
+
+class ScriptedUsageLlm:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+        self.messages_seen: list = []
+        self.chat = self
+
+    @property
+    def completions(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        self.messages_seen.append(list(kwargs.get("messages") or []))
+        resp, tokens = self.responses.pop(0)
+        resp.usage = SimpleNamespace(prompt_tokens=tokens, completion_tokens=0)
+        return resp
+
+
+def test_token_cap_backfills_missing_helper_without_llm(monkeypatch):
+    """Model never calls the balance helper; recovery fetches it over MCP so findings are complete."""
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "20000")
+    llm = ScriptedUsageLlm([
+        (_text_response("thinking..."), 9000),
+        (_text_response("still thinking..."), 10500),
+    ])
+    agent = HrAgent(BalanceMcp(), Catalogue(tools={}), openai_client=llm, max_steps=6)
+    journal = agent.run(BALANCE_PROMPT, task_id="cap_balance_check", as_of="2026-10-05")
+    assert journal.ended == "token_budget"
+    assert llm.calls == 2
+    assert any(s.target == "token_wrap_up" for s in journal.steps)
+    rows = journal.final_answer["findings"]["leave_balances"]
+    assert {r["leave_balance_id"] for r in rows} == {"b1", "b2"}
+    assert journal.final_answer["claimed_success"] is False
+
+
+def test_wrap_up_blocks_further_tool_calls(monkeypatch):
+    """Past the wrap-up threshold a tool call is not executed; the task ends from gathered data."""
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "20000")
+    llm = ScriptedUsageLlm([
+        (_tool_response("hr__scan_leave_balances", {}), 13000),
+        (_tool_response("hr__scan_leave_balances", {"employee_id": "zzz"}, call_id="c2"), 500),
+    ])
+    agent = HrAgent(BalanceMcp(), Catalogue(tools={}), openai_client=llm, max_steps=6)
+    journal = agent.run(BALANCE_PROMPT, task_id="cap_balance_check", as_of="2026-10-05")
+    assert journal.ended == "token_budget"
+    assert llm.calls == 2
+    helper_steps = [s for s in journal.steps if s.target == "hr__scan_leave_balances"]
+    assert len(helper_steps) == 1
+    wrap_msgs = [m for m in llm.messages_seen[1] if m.get("role") == "user"]
+    assert "Do not call any more tools" in str(wrap_msgs[-1]["content"])
+    rows = journal.final_answer["findings"]["leave_balances"]
+    assert len(rows) == 2
+
+
+def test_wrap_up_final_answer_gets_backfilled_helpers(monkeypatch):
+    """A final JSON given during wrap-up is accepted and merged with helper data fetched directly."""
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "20000")
+    final = (
+        '{"findings":{"on_leave":[],"attendance_flags":[],"confirmation_due":[],"leave_balances":[]},'
+        '"actions_taken":[],"uncertain":["LeaveType empty"],'
+        '"refused":{"is_refusal":false,"why":"","escalate_to":""},'
+        '"claimed_success":false,"as_of":"2026-10-05"}'
+    )
+    llm = ScriptedUsageLlm([
+        (_text_response("hmm"), 13000),
+        (_text_response(final), 500),
+    ])
+    agent = HrAgent(BalanceMcp(), Catalogue(tools={}), openai_client=llm, max_steps=6)
+    journal = agent.run(BALANCE_PROMPT, task_id="cap_balance_check", as_of="2026-10-05")
+    assert journal.ended == "done"
+    assert llm.calls == 2
+    assert len(journal.final_answer["findings"]["leave_balances"]) == 2
+
+
+def test_write_tasks_do_not_wrap_up_early(monkeypatch):
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "20000")
+    final = (
+        '{"findings":{"on_leave":[],"attendance_flags":[],"confirmation_due":[]},'
+        '"actions_taken":[],"uncertain":[],'
+        '"refused":{"is_refusal":false,"why":"","escalate_to":""},'
+        '"claimed_success":false,"as_of":"2026-10-05"}'
+    )
+    llm = ScriptedUsageLlm([(_text_response("hmm"), 13000), (_text_response(final), 500)])
+    agent = HrAgent(BalanceMcp(), Catalogue(tools={}), openai_client=llm, max_steps=6)
+    journal = agent.run("Fix one attendance row.", task_id="w", as_of="2026-10-05", allow_writes=True)
+    assert not any(s.target == "token_wrap_up" for s in journal.steps)
+    assert all("Do not call any more tools" not in str(m.get("content")) for m in llm.messages_seen[1])

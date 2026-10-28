@@ -111,6 +111,51 @@ def test_balance_scan_empty_types():
     assert "warning" in out
 
 
+class BalanceMcp(FakeMcp):
+    """e_inactive has the most rows but is not active; e_b and e_a tie among actives."""
+
+    def list_all(self, tool, arguments=None, **kw):
+        if tool == "LeaveBalance.list":
+            rows = []
+            for eid, n in (("e_inactive", 5), ("e_b", 3), ("e_a", 3), ("e_c", 1)):
+                rows += [
+                    {"id": f"{eid}-{i}", "employee_id": eid, "leave_type": f"t{i}", "balance_days": i}
+                    for i in range(n)
+                ]
+            return {"items": rows, "total": len(rows), "pages": 1, "partial_error": None}
+        if tool == "LeaveType.list":
+            return {"items": [], "total": 0, "pages": 1, "partial_error": None}
+        return super().list_all(tool, arguments, **kw)
+
+
+def _balance_mcp():
+    return BalanceMcp(emps=[
+        {"id": eid, "status": "active", "first_name": eid.upper()} for eid in ("e_a", "e_b", "e_c")
+    ] + [{"id": "e_inactive", "status": "inactive"}])
+
+
+def test_balance_scan_picks_active_employee_deterministically():
+    out = run_helper(_balance_mcp(), "hr__scan_leave_balances", {})
+    assert out["employee_id"] == "e_a"
+    assert out["employee_status"] == "active"
+    assert len(out["balances"]) == 3
+    assert {b["employee_id"] for b in out["balances"]} == {"e_a"}
+
+
+def test_balance_scan_unknown_id_falls_back():
+    out = run_helper(_balance_mcp(), "hr__scan_leave_balances", {"employee_id": "made-up"})
+    assert out["employee_id"] == "e_a"
+    assert len(out["balances"]) == 3
+    assert "made-up" in out["note"]
+
+
+def test_balance_scan_keeps_valid_given_id():
+    out = run_helper(_balance_mcp(), "hr__scan_leave_balances", {"employee_id": "e_c"})
+    assert out["employee_id"] == "e_c"
+    assert len(out["balances"]) == 1
+    assert "note" not in out
+
+
 def test_holiday_scan_empty():
     out = run_helper(FakeMcp(), "hr__scan_holidays", {"as_of": "2026-09-29"})
     assert out["catalogue_empty"]
