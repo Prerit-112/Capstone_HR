@@ -205,7 +205,8 @@ def run_helper(mcp: McpClient, name: str, args: dict[str, Any]) -> Any:
 
 # Reasons a write task may correct; ordered by preference.
 WRITE_FIX_REASONS = ("present_with_null_punches", "is_lop_with_zero_hours", "check_out_before_check_in")
-_FIX_SCAN_PAGES = 3
+# Deep enough that prior corrections in early pages do not leave the finder empty.
+_FIX_SCAN_PAGES = 10
 
 
 def _find_attendance_to_fix(mcp: McpClient, args: dict[str, Any]) -> dict[str, Any]:

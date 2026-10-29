@@ -9,7 +9,9 @@ from agent.catalogue import Catalogue
 from agent.journal import RunJournal, Step
 from agent.loop import (
     HrAgent,
+    _attendance_update_succeeded,
     _compact_messages,
+    _conflict_step,
     _enrich_attendance_update,
     _recover_final_answer,
     _slim_tool_payload,
@@ -442,3 +444,160 @@ def test_write_tasks_do_not_wrap_up_early(monkeypatch):
     journal = agent.run("Fix one attendance row.", task_id="w", as_of="2026-10-05", allow_writes=True)
     assert not any(s.target == "token_wrap_up" for s in journal.steps)
     assert all("Do not call any more tools" not in str(m.get("content")) for m in llm.messages_seen[1])
+
+def test_write_task_auto_attempts_update_when_model_refuses(monkeypatch):
+    """Server-style cautious model refuses without writing; agent still drives get→update."""
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "40000")
+    from agent.catalogue import ToolSpec
+    from harness.verify import verify_write_conflict
+
+    row = {
+        "id": "a1",
+        "employee_id": "e1",
+        "date": "2026-09-12",
+        "status": "present",
+        "check_in": None,
+        "check_out": None,
+        "overtime_hours": 0.0,
+        "is_lop": False,
+        "lop_hours": 0.0,
+        "shift": "day",
+    }
+
+    class WriteMcp(FakeMcp):
+        def list_all(self, tool, arguments=None, **kw):
+            if tool == "Attendance.list":
+                return {"items": [dict(row)], "total": 1, "pages": 1, "partial_error": None}
+            return {"items": [], "total": 0, "pages": 1, "partial_error": None}
+
+        def tools_call(self, name, args=None):
+            if name == "Attendance.get":
+                return dict(row)
+            if name == "Attendance.update":
+                return {"ok": True, **dict(row), "status": (args or {}).get("status", "absent")}
+            raise AssertionError(name)
+
+    refusal = (
+        '{"findings":{"on_leave":[],"attendance_flags":[],"confirmation_due":[]},'
+        '"actions_taken":[],"uncertain":["not sure"],'
+        '"refused":{"is_refusal":true,"why":"cannot find a safe row","escalate_to":"admin"},'
+        '"claimed_success":false,"as_of":"2026-10-05"}'
+    )
+    llm = ScriptedUsageLlm([(_text_response(refusal), 200)])
+    cat = Catalogue(
+        tools={
+            "Attendance.get": ToolSpec(
+                name="Attendance.get",
+                description="get",
+                input_schema={"type": "object", "properties": {"id": {}}, "required": ["id"]},
+            ),
+            "Attendance.update": ToolSpec(
+                name="Attendance.update",
+                description="update",
+                input_schema={
+                    "type": "object",
+                    "properties": {"id": {}, "employee_id": {}, "date": {}, "status": {}},
+                    "required": ["id"],
+                },
+            ),
+        }
+    )
+    agent = HrAgent(WriteMcp(), cat, openai_client=llm, max_steps=4)
+    journal = agent.run(
+        "Find one Attendance row that looks wrong and update it to absent.",
+        task_id="write_fix_attendance",
+        as_of="2026-10-05",
+        allow_writes=True,
+        write_allowlist={"Attendance.update"},
+    )
+    assert _attendance_update_succeeded(journal) or _conflict_step(journal) is not None
+    assert any(s.target == "write_auto" for s in journal.steps)
+    assert journal.claimed_success is True
+    assert journal.ended == "done"
+
+
+def test_write_conflict_auto_attempt_records_shared_book_guard(monkeypatch):
+    monkeypatch.setenv("LLM_TASK_TOKEN_LIMIT", "40000")
+    from agent.catalogue import ToolSpec
+    from harness.verify import verify_write_conflict
+
+    class ConflictMcp(FakeMcp):
+        def list_all(self, tool, arguments=None, **kw):
+            if tool == "Attendance.list":
+                items = [{
+                    "id": "a1",
+                    "employee_id": "e1",
+                    "date": "2026-09-12",
+                    "status": "present",
+                    "check_in": None,
+                    "check_out": None,
+                    "is_lop": False,
+                    "lop_hours": 0.0,
+                    "overtime_hours": 0.0,
+                }]
+                return {"items": items, "total": 1, "pages": 1, "partial_error": None}
+            return {"items": [], "total": 0, "pages": 1, "partial_error": None}
+
+        def tools_call(self, name, args=None):
+            if name == "Attendance.get":
+                return {
+                    "id": "a1",
+                    "employee_id": "e1",
+                    "date": "2026-09-12",
+                    "status": "present",
+                    "check_in": None,
+                    "check_out": None,
+                    "overtime_hours": 0.0,
+                    "is_lop": False,
+                    "lop_hours": 0.0,
+                    "shift": "day",
+                }
+            raise AssertionError(f"unexpected {name}")
+
+    refusal = (
+        '{"findings":{"on_leave":[],"attendance_flags":[],"confirmation_due":[]},'
+        '"actions_taken":[],"uncertain":[],'
+        '"refused":{"is_refusal":true,"why":"no","escalate_to":"admin"},'
+        '"claimed_success":false,"as_of":"2026-10-05"}'
+    )
+    llm = ScriptedUsageLlm([(_text_response(refusal), 200)])
+    cat = Catalogue(
+        tools={
+            "Attendance.get": ToolSpec(
+                name="Attendance.get",
+                description="get",
+                input_schema={"type": "object", "properties": {"id": {}}, "required": ["id"]},
+            ),
+            "Attendance.update": ToolSpec(
+                name="Attendance.update",
+                description="update",
+                input_schema={
+                    "type": "object",
+                    "properties": {"id": {}, "employee_id": {}, "date": {}, "status": {}, "shift": {}, "overtime_hours": {}},
+                    "required": ["id"],
+                },
+            ),
+        }
+    )
+    agent = HrAgent(ConflictMcp(), cat, openai_client=llm, max_steps=4)
+
+    real_dispatch = agent._dispatch_tool
+
+    def wrap(journal, name, args, **kwargs):
+        if name == "Attendance.update":
+            detail = "shared_book_conflict: record changed since last read — write aborted"
+            journal.add(Step("guard", "Attendance.update", False, detail, args=args))
+            return {"refused": True, "why": detail, "escalate_to": "Team 12"}
+        return real_dispatch(journal, name, args, **kwargs)
+
+    agent._dispatch_tool = wrap  # type: ignore[method-assign]
+    journal = agent.run(
+        "Find one Attendance row that looks wrong. You MUST call Attendance.get then Attendance.update. Abort on conflict.",
+        task_id="write_conflict_abort",
+        as_of="2026-10-05",
+        allow_writes=True,
+        write_allowlist={"Attendance.update"},
+    )
+    assert journal.ended == "refused"
+    assert journal.final_answer["refused"]["is_refusal"] is True
+    assert verify_write_conflict(journal)["outcome"] == "verified_pass"
